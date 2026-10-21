@@ -119,11 +119,48 @@ def go_to(page_name):
 
 # ---------------------------------------------------------------- basic pieces
 def metric_tile(label, value, delta=None, accent=ACCENT):
+    """Stat tile. Long values (names, descriptions) automatically use a smaller font and wrap instead of overflowing."""
     d = f'<div class="kp-metric-delta">{delta}</div>' if delta else ""
+    cls = "kp-metric-value" + (" kp-metric-value-sm" if len(str(value)) > 16 else "")
     st.markdown(
         f'<div class="kp-metric"><div class="kp-metric-icon" style="background:{accent}"></div>'
         f'<div class="kp-metric-label">{label.upper()}</div>'
-        f'<div class="kp-metric-value">{value}</div>{d}</div>', unsafe_allow_html=True)
+        f'<div class="{cls}">{value}</div>{d}</div>', unsafe_allow_html=True)
+
+
+def map_view(lats=None, lons=None, width_px=900, height_px=420):
+    """Centre and zoom for a map. With points: fit them (Web-Mercator maths, clamped to zooms 8-15, single point = street
+    level). Without points, or with unusable ones: Karachi. Maps therefore always open on the city - never on the world
+    view that Plotly picks when it is not told where to look."""
+    import math
+    pts = []
+    try:
+        for la, lo in zip(list(lats or []), list(lons or [])):
+            la, lo = float(la), float(lo)
+            if math.isfinite(la) and math.isfinite(lo) and -85 < la < 85 and -180 <= lo <= 180:
+                pts.append((la, lo))
+    except (TypeError, ValueError):
+        pts = []
+    if not pts:
+        return {"center": {"lat": config.KARACHI_CENTER[0], "lon": config.KARACHI_CENTER[1]}, "zoom": config.KARACHI_MAP_ZOOM}
+    la0, la1 = min(p[0] for p in pts), max(p[0] for p in pts)
+    lo0, lo1 = min(p[1] for p in pts), max(p[1] for p in pts)
+    pad = 1.25                                            # breathing room around the outermost points
+    span_lon = max((lo1 - lo0) * pad, 0.03)
+    span_lat = max((la1 - la0) * pad, 0.03)
+    z_lon = math.log2(360.0 * width_px / (256.0 * span_lon))
+    # Mercator stretches vertical distance by 1/cos(lat): express the latitude span in longitude-degree equivalents
+    z_lat = math.log2(360.0 * height_px * max(math.cos(math.radians((la0 + la1) / 2)), 0.1) / (256.0 * span_lat))
+    return {"center": {"lat": (la0 + la1) / 2, "lon": (lo0 + lo1) / 2}, "zoom": round(max(8.0, min(15.0, z_lon, z_lat)), 2)}
+
+
+def karachi_map(fig, height, lats=None, lons=None, width_px=900):
+    """Applies the dark base map, a tight layout and a Karachi-fitted view to a Plotly map figure."""
+    v = map_view(lats, lons, width_px, height)
+    fig.update_layout(map_style="carto-darkmatter", map_center=v["center"], map_zoom=v["zoom"], height=height,
+                      margin=dict(l=0, r=0, t=0, b=0), paper_bgcolor="rgba(0,0,0,0)",
+                      legend=dict(font_color=TEXT, bgcolor="rgba(12,17,26,0.7)"), uirevision="krypta-map")
+    return fig
 
 
 def pill(text, color=None):

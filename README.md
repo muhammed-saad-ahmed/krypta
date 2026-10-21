@@ -1,4 +1,23 @@
-<p align="center"><img src="docs/krypta-logo.png" alt="KRYPTA logo" width="260"></p>
+<p align="center">
+  <img src="docs/krypta-banner.png" alt="KRYPTA - Karachi Risk & YOLO-driven Platform for Terrain Analysis" width="100%">
+</p>
+
+<p align="center">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.1.0-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="Python" src="https://img.shields.io/badge/built%20with-Python%20%2B%20Streamlit-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="Cost" src="https://img.shields.io/badge/cost-%240%20free%20tools-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="Status" src="https://img.shields.io/badge/status-research%20prototype-F5A524?style=flat-square&labelColor=0C111A">
+</p>
+
+<p align="center">
+  <a href="#overview">Overview</a> &nbsp;·&nbsp;
+  <a href="#what-the-system-does">Features</a> &nbsp;·&nbsp;
+  <a href="#setup">Setup</a> &nbsp;·&nbsp;
+  <a href="#quick-start-the-multi-modal-demo-offline-0-no-network">Quick start</a> &nbsp;·&nbsp;
+  <a href="#project-structure">Structure</a> &nbsp;·&nbsp;
+  <a href="#honesty-statement">Honesty</a>
+</p>
 
 # KRYPTA
 ### Karachi Risk & YOLO-driven Platform for Terrain Analysis
@@ -7,7 +26,7 @@
 >
 > *Not an official municipal system, safety rating, government service, or production-ready hazard detection system.*
 
-**Author:** Muhammad Saad
+**Author:** Muhammad Saad Ahmed ([LinkedIn](https://www.linkedin.com/in/muhammed-saad-ahmed) · [GitHub](https://github.com/muhammed-saad-ahmed))  
 **Version:** 2.1.0 (multi-modal edition, hardened)
 **License:** MIT
 
@@ -112,7 +131,7 @@ python -m venv .venv
 source .venv/bin/activate           # Windows: .venv\Scripts\Activate.ps1
 pip install -r requirements.txt     # light runtime: no PyTorch, CPU only
 cp .env.example .env                # then set KP_PRIVACY_SALT (and optionally KP_LEDGER_KEY)
-python -m pytest -q                 # 86 tests (31 original + 55 v2) should pass
+python -m pytest -q                 # the full suite should pass
 streamlit run app.py
 ```
 

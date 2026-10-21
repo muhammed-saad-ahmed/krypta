@@ -90,9 +90,24 @@ def benchmark(det, n=None, size=(640, 640)):
 
 
 def run(det, img):
+    """Runs one detector on one BGR image. Never raises: a failing model (missing weights, no internet for the first
+    weights download, out of memory...) comes back as status "error" with the reason in `error`, so the UI can say
+    what happened instead of hanging or showing a traceback."""
     t = time.time(); h, w = img.shape[:2]
-    dets = [d for d in det.detect(img) if d["confidence"] >= MIN_CONFIDENCE] if det.available() else []
+    error = None
+    try:
+        dets = [d for d in det.detect(img) if d["confidence"] >= MIN_CONFIDENCE] if det.available() else []
+    except Exception as exc:                       # noqa: BLE001 - deliberately broad; reported to the caller
+        dets, error = [], f"{type(exc).__name__}: {exc}"
     return {"model": det.name, "version": det.version, "scope": det.scope,
             "input_resolution": f"{w}x{h}", "inference_ms": round((time.time()-t)*1000, 1),
-            "detections": dets, "status": "ok" if dets else INSUFFICIENT,
+            "detections": dets, "status": "error" if error else ("ok" if dets else INSUFFICIENT), "error": error,
             "mode": "CUSTOM" if is_custom(det) else "DEMO/BASELINE - performance limited"}
+
+
+def prefetch_baseline(weights="yolov8s.pt"):
+    """Downloads/loads the COCO baseline once (so the first upload in the app does not wait for it).
+    python -c "from computer_vision.detection import prefetch_baseline as p; p()" """
+    from ultralytics import YOLO
+    YOLO(weights)
+    return weights

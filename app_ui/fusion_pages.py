@@ -19,7 +19,7 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from app_ui.components import (confidence_bar, empty_state, error_state, metric_tile, section_header)
+from app_ui.components import (confidence_bar, empty_state, error_state, karachi_map, metric_tile, section_header)
 from app_ui.theme import ACCENT, TEXT, TEXT_FAINT, TEXT_MUTED, risk_color
 from database import db as kpdb
 from geospatial import satellite as sat
@@ -124,10 +124,9 @@ def render_risk_matrix(conn):
         fig = px.scatter_map(m, lat="lat", lon="lon", color="matrix_category", size="risk_score", size_max=24,
                              hover_name="hazard_type", hover_data={"risk_score": True, "corroboration": True,
                                                                    "lat": False, "lon": False, "matrix_category": False},
-                             color_discrete_map={k: risk_color(k) for k in CATEGORIES}, zoom=10,
+                             color_discrete_map={k: risk_color(k) for k in CATEGORIES},
                              category_orders={"matrix_category": CATEGORIES})
-        fig.update_layout(map_style="carto-darkmatter", height=330, margin=dict(l=0, r=0, t=0, b=0),
-                          paper_bgcolor="rgba(0,0,0,0)", legend=dict(font_color=TEXT))
+        karachi_map(fig, 330, m["lat"], m["lon"], width_px=520)
         st.plotly_chart(fig, width="stretch")
 
     st.markdown('<div class="kp-eyebrow" style="margin-top:0.6rem">ASSESSMENTS (HIGHEST RISK FIRST)</div>', unsafe_allow_html=True)
@@ -270,6 +269,55 @@ def render_satellite_check(conn):
                            "scene_id", "provider", "is_synthetic"]], width="stretch", height=240)
 
 
+
+# ---- satellite scene panels: dark scales (dark = nothing, bright = signal) with a label and a how-to-read line each
+_SCALE_NDWI = [[0.0, "#0A101A"], [0.45, "#12384D"], [0.75, "#1E87A8"], [1.0, "#7FEBFF"]]
+_SCALE_WATER = [[0.0, "#0A101A"], [0.5, "#12607A"], [1.0, "#7FEBFF"]]
+_SCALE_GAIN = [[0.0, "#0A101A"], [1.0, "#FF8A3D"]]
+_SCALE_SHADOW = [[0.0, "#0A101A"], [1.0, "#E8C547"]]
+
+
+def _heat(arr, scale, zmin, zmax, colorbar=True, height=250):
+    fig = px.imshow(np.asarray(arr, dtype=float), color_continuous_scale=scale, zmin=zmin, zmax=zmax, aspect="equal")
+    fig.update_layout(margin=dict(l=0, r=0, t=4, b=0), height=height, paper_bgcolor="rgba(0,0,0,0)",
+                      plot_bgcolor="rgba(0,0,0,0)", font_color=TEXT, coloraxis_showscale=bool(colorbar),
+                      coloraxis_colorbar=dict(thickness=8, len=0.85, outlinewidth=0,
+                                              tickfont=dict(color=TEXT_MUTED, size=10)))
+    fig.update_traces(hovertemplate="x %{x}, y %{y}<br>value %{z:.2f}<extra></extra>")
+    fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
+    return fig
+
+
+def _panel(col, title, how_to_read, fig):
+    with col:
+        st.markdown(f'<div class="kp-eyebrow" style="margin-bottom:0.2rem">{title}</div>', unsafe_allow_html=True)
+        st.plotly_chart(fig, width="stretch")
+        st.caption(how_to_read)
+
+
+def _render_scene_panels(pv):
+    """The five map panels of one Sentinel-2 check. Images are 10 m pixels, north up; brighter = stronger signal."""
+    n_gain = int(np.asarray(pv["gain"]).sum()) if "gain" in pv else 0
+    st.markdown('<div class="kp-eyebrow" style="margin-top:0.6rem">WHAT THE SATELLITE SAW</div>', unsafe_allow_html=True)
+    st.caption("Each square is the same patch of ground. Dark = nothing detected, bright = strong signal. "
+               "Pixels are 10 m x 10 m, so narrow streets are invisible at this scale.")
+    g = st.columns(3)
+    _panel(g[0], "BEFORE - DRY BASELINE", "Water index of the dry-period median. Cyan = permanent water (sea, ponds).",
+           _heat(pv["ndwi_base"], _SCALE_NDWI, -0.6, 0.6))
+    _panel(g[1], "AFTER - EVENT SCENE", "Same index on the scene nearest the report. New cyan areas = possible new water.",
+           _heat(pv["ndwi_event"], _SCALE_NDWI, -0.6, 0.6))
+    _panel(g[2], "NEWLY WET PIXELS",
+           (f"{n_gain:,} pixel(s) turned wet and survived the cloud, vegetation and speckle filters." if n_gain
+            else "No pixel turned wet: nothing to confirm in this patch."),
+           _heat(pv["gain"], _SCALE_GAIN, 0, 1, colorbar=False))
+    if "water_abundance_event" in pv:
+        g2 = st.columns(2)
+        _panel(g2[0], "WATER FRACTION (LSMA)", "Share of each pixel that is water after spectral unmixing, 0 to 1.",
+               _heat(pv["water_abundance_event"], _SCALE_WATER, 0, 1))
+        _panel(g2[1], "SHADOW MASK", "Yellow = building / cloud shadow removed before judging, so shadows are never read as water.",
+               _heat(pv["shadow"], _SCALE_SHADOW, 0, 1, colorbar=False))
+
+
 def _render_evidence(ev):
     colors = {sat.CONFIRMED_WET: risk_color("High"), sat.NO_CHANGE: risk_color("Low"),
               sat.INCONCLUSIVE: risk_color("Moderate"), sat.NOT_APPLICABLE: TEXT_FAINT}
@@ -288,26 +336,7 @@ def _render_evidence(ev):
     with k[3]: metric_tile("Scene", ev.scene_id or "-")
     pv = ev.preview
     if pv:
-        g = st.columns(3)
-        for col_, key, title in ((g[0], "ndwi_base", "NDWI baseline (dry median)"), (g[1], "ndwi_event", "NDWI event scene"),
-                                 (g[2], "gain", "Newly wet pixels")):
-            arr = pv[key].astype(float) if key == "gain" else pv[key]
-            fig = px.imshow(arr, color_continuous_scale="Blues" if key != "gain" else "Reds",
-                            zmin=-0.6 if key != "gain" else 0, zmax=0.6 if key != "gain" else 1, aspect="equal")
-            fig.update_layout(coloraxis_showscale=False, title=dict(text=title, font=dict(size=12)),
-                              margin=dict(l=0, r=0, t=30, b=0), height=240, paper_bgcolor="rgba(0,0,0,0)", font_color=TEXT)
-            fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
-            col_.plotly_chart(fig, width="stretch")
-    if pv and "water_abundance_event" in pv:
-        g2 = st.columns(2)
-        for col_, key, title, scale in ((g2[0], "water_abundance_event", "Water fraction, event scene (LSMA)", "Blues"),
-                                        (g2[1], "shadow", "Building / cloud shadow mask", "Greys")):
-            arr = np.asarray(pv[key]).astype(float)
-            fig = px.imshow(arr, color_continuous_scale=scale, zmin=0, zmax=1, aspect="equal")
-            fig.update_layout(coloraxis_showscale=False, title=dict(text=title, font=dict(size=12)),
-                              margin=dict(l=0, r=0, t=30, b=0), height=240, paper_bgcolor="rgba(0,0,0,0)", font_color=TEXT)
-            fig.update_xaxes(visible=False); fig.update_yaxes(visible=False)
-            col_.plotly_chart(fig, width="stretch")
+        _render_scene_panels(pv)
     d = ev.to_dict() if hasattr(ev, "to_dict") else {}
     stats = {k: d.get(k) for k in ("method", "shadow_filter", "shadow_false_positive_px", "naive_ndwi_gain_frac",
                                    "water_equiv_gain_frac", "fit_rmse_event_mean", "poor_fit_fraction") if k in d}

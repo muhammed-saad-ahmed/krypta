@@ -18,7 +18,7 @@ from app_ui.theme import inject_global_css, risk_color, TEXT, TEXT_MUTED, TEXT_F
 from app_ui.components import (metric_tile, confidence_bar, section_header, hero, radial_gauge,
                                 pipeline_diagram, empty_state, error_state, footer, privacy_badge,
                                 incident_dossier, nav_group, go_to, draw_detections, grouped_detections,
-                                detection_group_row, class_color_hex, logo_html)
+                                detection_group_row, class_color_hex, logo_html, karachi_map)
 
 st.set_page_config("KRYPTA — Karachi Risk & YOLO-driven Platform for Terrain Analysis", layout="wide", initial_sidebar_state="expanded")
 inject_global_css()
@@ -86,10 +86,9 @@ def _parse_coord(s):
         return None
 
 
-def dark_map(fig, height):
-    fig.update_layout(map_style="carto-darkmatter", height=height, margin=dict(l=0, r=0, t=0, b=0),
-                       paper_bgcolor="rgba(0,0,0,0)", legend=dict(font_color="#F5F7FA"))
-    return fig
+def dark_map(fig, height, df=None):
+    """Dark map that opens on Karachi (fitted to df's lat/lon when given) instead of the whole world."""
+    return karachi_map(fig, height, None if df is None else df["lat"], None if df is None else df["lon"])
 
 
 det = get_cached_detector(st.session_state.get("baseline_weights", DEFAULT_BASELINE))
@@ -147,7 +146,7 @@ if page == "Command Center":
         section_header("CITY INTELLIGENCE", "Karachi Intelligence Map")
         fig = px.scatter_map(df, lat="lat", lon="lon", color="level",
                               color_discrete_map={l: risk_color(l) for l in LEVELS})
-        st.plotly_chart(dark_map(fig, 380), width="stretch")
+        st.plotly_chart(dark_map(fig, 380, df), width="stretch")
         st.caption("Full filtering and incident detail live on the Intelligence Map page.")
     with cR:
         section_header("QUICK ACTIONS", "")
@@ -228,7 +227,12 @@ elif page == "AI Analysis Lab":
                     with tempfile.NamedTemporaryFile(suffix="." + f.name.rsplit(".", 1)[1]) as t:
                         t.write(data); t.flush(); frames = pp.sample_frames(t.name)
                     show_stage(2)
-                    runs = [dt.run(active_det, x) for x in frames]
+                    with st.spinner("Running the detector on the sampled frames (first run downloads the weights)..."):
+                        runs = [dt.run(active_det, x) for x in frames]
+                    _err = next((x["error"] for x in runs if x["status"] == "error"), None)
+                    if _err:
+                        error_state("The detector could not run.", _err)
+                        continue
                     show_stage(3)
                     tr = track([r["detections"] for r in runs])
                     show_stage(4); show_stage(5); show_stage(6)
@@ -260,8 +264,16 @@ elif page == "AI Analysis Lab":
                 img = pp.decode_image(data)
                 show_stage(2)
                 view_img = pp.blur_faces(img) if blur else img
-                r = dt.run(active_det, view_img)
+                with st.spinner("Running the detector... the FIRST run downloads the model weights "
+                                "(about 22 MB) and loads PyTorch, which can take a minute or two."):
+                    r = dt.run(active_det, view_img)
                 show_stage(3); show_stage(4); show_stage(5); show_stage(6)
+                if r["status"] == "error":
+                    error_state("The detector could not run.", r["error"] +
+                                "  |  If this is the first run, the weights download needs internet; or run "
+                                "`python -c \"from computer_vision.detection import prefetch_baseline as p; p()\"` once "
+                                "while online.")
+                    continue
 
                 cL, cR = st.columns([1, 1])
                 with cL:
@@ -343,7 +355,7 @@ elif page == "Intelligence Map":
             fig = px.scatter_map(d, lat="lat", lon="lon", color="level", hover_name="code",
                                   hover_data={"type": True, "risk": True, "lat": False, "lon": False, "level": False},
                                   color_discrete_map={l: risk_color(l) for l in LEVELS}, zoom=10)
-            event = st.plotly_chart(dark_map(fig, 560), width="stretch", on_select="rerun",
+            event = st.plotly_chart(dark_map(fig, 560, d), width="stretch", on_select="rerun",
                                      selection_mode="points", key="map_select")
             if event and event.get("selection", {}).get("points"):
                 sel_idx = event["selection"]["points"][0]["point_index"]
@@ -425,7 +437,7 @@ elif page == "Flood Lab":
     else:
         mfig = px.scatter_map(cur, lat="lat", lon="lon", color="level", hover_name="code",
                                color_discrete_map={l: risk_color(l) for l in LEVELS}, zoom=10)
-        st.plotly_chart(dark_map(mfig, 340), width="stretch")
+        st.plotly_chart(dark_map(mfig, 340, cur), width="stretch")
 
     st.markdown('<div class="kp-eyebrow" style="margin-top:0.6rem">AFFECTED ZONES BY RAINFALL SCENARIO</div>', unsafe_allow_html=True)
     comp = pd.DataFrame([{"rain_mm": mm, "affected_zones": int((scored(d, mm).level.isin(["Moderate", "High", "Critical"])).sum())}
@@ -648,7 +660,11 @@ elif page == "Model Lab":
     c1, c2, c3 = st.columns(3)
     with c1: metric_tile("Model", det.name)
     with c2: metric_tile("Weights", det.version)
-    with c3: metric_tile("Scope", det.scope)
+    with c3:
+        if det.name == "yolo-baseline":
+            metric_tile("Scope", "COCO baseline", delta="General objects only (people, vehicles, ...) - no hazard classes")
+        else:
+            metric_tile("Scope", det.scope)
     st.write("")
     if dt.is_custom(det):
         st.info("A custom model was found in models/custom/. Its class list and benchmark below reflect that model.")
@@ -787,12 +803,45 @@ elif page == "Research":
 
 # ================================================================ ABOUT
 else:
-    section_header("ABOUT", "KRYPTA")
-    if logo_html(300):
-        st.markdown(logo_html(300), unsafe_allow_html=True)
-    st.markdown('<div class="kp-card">'
-                '<p><b>KRYPTA</b> — Karachi Risk &amp; YOLO-driven Platform for Terrain Analysis. An independent research prototype exploring low-cost AI for infrastructure intelligence.</p>'
-                '<p>Developer: Muhammad Saad.</p>'
-                f'<p style="color:{TEXT_MUTED}">Not affiliated with any government, municipal, or academic institution. '
-                'Risk scores are experimental and are not an official safety rating.</p></div>', unsafe_allow_html=True)
+    st.markdown('<div class="kp-eyebrow">ABOUT THE PROJECT</div>', unsafe_allow_html=True)
+    _l = logo_html(340)
+    if _l:                                               # the logo already carries the name and the full title
+        st.markdown(f'<div class="kp-about-logo">{_l}</div>', unsafe_allow_html=True)
+    else:
+        st.markdown('<h1 style="margin-top:0">KRYPTA</h1>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="kp-card kp-about-card">'
+        '<div class="kp-about-title">Karachi Risk &amp; YOLO-driven Platform for Terrain Analysis</div>'
+        '<p>KRYPTA is an independent research prototype that explores whether three low-cost evidence streams - '
+        'edge computer vision, public community reports and Sentinel-2 satellite imagery - can be fused into an '
+        '<b>auditable</b> picture of road and drainage hazards in a resource-constrained megacity.</p>'
+        f'<p style="color:{TEXT_MUTED}">Every score comes with its inputs, its uncertainty and a tamper-evident record. '
+        'Where something cannot be measured, the system says so.</p></div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="kp-dev-card">'
+        '<div class="kp-dev-top">'
+        '<div class="kp-dev-mono">MSA</div>'
+        '<div class="kp-dev-id">'
+        '<div class="kp-dev-label">DESIGNED &amp; DEVELOPED BY</div>'
+        '<div class="kp-dev-name">Muhammad Saad Ahmed</div>'
+        '<div class="kp-dev-meta"><span class="kp-dev-chip">Founder &amp; Lead Developer</span>'
+        '<span class="kp-dev-loc"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 21s7-6.2 7-11.5A7 7 0 0 0 5 9.5C5 14.800 12 21 12 21z"/><circle cx="12" cy="9.5" r="2.5"/></svg> Karachi, Pakistan</span></div></div>'
+        '<div class="kp-dev-links">'
+        '<a class="kp-dev-link" href="https://github.com/muhammed-saad-ahmed/krypta" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M9 19c-4.3 1.4-4.3-2.5-6-3m12 5v-3.5c0-1 .1-1.400-.5-2 2.800-.3 5.500-1.400 5.500-6a4.600 4.600 0 0 0-1.300-3.200 4.200 4.200 0 0 0-.1-3.200s-1.100-.3-3.500 1.300a12.300 12.300 0 0 0-6.200 0C6.500 2.800 5.400 3.100 5.400 3.100a4.200 4.200 0 0 0-.1 3.200A4.600 4.600 0 0 0 4 9.500c0 4.600 2.700 5.700 5.500 6-.6.600-.6 1.200-.5 2V21"/></svg><span>GitHub</span></a>'
+        '<a class="kp-dev-link" href="https://www.linkedin.com/in/muhammed-saad-ahmed" target="_blank" rel="noopener"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M16 8a6 6 0 0 1 6 6v7h-4v-7a2 2 0 0 0-4 0v7h-4v-7a6 6 0 0 1 6-6z"/><rect x="2" y="9" width="4" height="12"/><circle cx="4" cy="4" r="2"/></svg><span>LinkedIn</span></a>'
+        '</div>'
+        '</div>'
+        '<div class="kp-dev-grid">'
+        '<div class="kp-dev-col"><div class="kp-dev-ic"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12z"/><circle cx="12" cy="12" r="3"/></svg></div><div><div class="kp-dev-k">VISION</div>'
+        '<div class="kp-dev-v">Auditable, low-cost infrastructure intelligence for megacities.</div></div></div>'
+        '<div class="kp-dev-col"><div class="kp-dev-ic"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 12l9-5M12 12v10M12 12L3 7"/></svg></div><div><div class="kp-dev-k">EXPERTISE</div>'
+        '<div class="kp-dev-v">Computer vision, geospatial analytics and multi-modal risk fusion.</div></div></div>'
+        '<div class="kp-dev-col"><div class="kp-dev-ic"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z"/><path d="M8.5 12l2.5 2.5 4.5-5"/></svg></div><div><div class="kp-dev-k">PRINCIPLES</div>'
+        '<div class="kp-dev-v">Transparency, privacy by design and honest uncertainty.</div></div></div>'
+        '</div>'
+        f'<div class="kp-dev-foot"><span>KRYPTA v{VERSION}</span><span>MIT License</span>'
+        '<span>Independent research project</span></div></div>', unsafe_allow_html=True)
+    st.markdown(f'<div style="color:{TEXT_FAINT};font-size:0.8rem;margin-top:1rem;line-height:1.6">'
+                'Not affiliated with any government, municipal or academic institution. Risk scores are experimental and '
+                'are not an official safety rating.</div>', unsafe_allow_html=True)
     footer()

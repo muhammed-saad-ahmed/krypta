@@ -1,7 +1,7 @@
 # KRYPTA — Karachi Risk & YOLO-driven Platform for Terrain Analysis: Low-Cost AI Infrastructure Intelligence
 ### A Research Prototype — Status Report and Methodology
 
-**Author:** Muhammad Saad
+**Author:** Muhammad Saad Ahmed
 **Status:** Working engineering prototype (v2) with a demo/baseline vision model, an edge ONNX deployment path, a community-report (OSINT) pipeline, Sentinel-2 cross-verification, a multi-modal evidence-fusion risk matrix, and synthetic demonstration data. No hazard-specific model has been trained and no real Karachi observations have been collected — both are stated plainly wherever they matter, in this document and in the application itself.
 
 ---

@@ -140,3 +140,112 @@ def test_logo_html_inlines_image_and_falls_back_when_missing(tmp_path):
     html = logo_html(200)
     assert html.startswith("<img src=\"data:image/png;base64,") and "width:200px" in html and "KRYPTA" in html
     assert logo_html(200, path=str(tmp_path / "nope.png")) == ""             # missing file -> text wordmark fallback
+
+
+# ---------------------------------------------------------------- detector failures must not hang or crash the page
+def test_detector_failure_is_reported_not_raised():
+    import numpy as np
+    from computer_vision import detection as dt
+
+    class Boom(dt.Detector):
+        name, version, scope = "yolo-baseline", "x", "none"
+        def available(self): return True
+        def detect(self, img): raise OSError("download failed: no internet")
+
+    r = dt.run(Boom(), np.zeros((32, 32, 3), np.uint8))
+    assert r["status"] == "error" and "download failed" in r["error"] and r["detections"] == []
+
+
+def test_normal_detector_run_has_no_error_field_set():
+    import numpy as np
+    from computer_vision import detection as dt
+    r = dt.run(dt.Detector(), np.zeros((32, 32, 3), np.uint8))
+    assert r["status"] == dt.INSUFFICIENT and r["error"] is None
+
+
+# ---------------------------------------------------------------- theme: nothing may render light-on-light
+def _theme_css():
+    src = open(os.path.join(ROOT, "app_ui", "theme.py"), encoding="utf-8").read()
+    return src
+
+
+def test_streamlit_config_forces_dark_base_theme():
+    cfg = open(os.path.join(ROOT, ".streamlit", "config.toml"), encoding="utf-8").read()
+    assert 'base = "dark"' in cfg and '"#3DD6F5"' in cfg and '"#070A0F"' in cfg
+
+
+def test_theme_styles_dropdown_popovers_and_does_not_paint_every_slider_div():
+    css = _theme_css()
+    for needle in ('div[data-baseweb="popover"]', 'ul[role="listbox"]', 'li[role="option"]', 'span[data-baseweb="tag"]',
+                   "stTooltipContent", "stSliderThumbValue"):
+        assert needle in css, f"missing theme rule for {needle}"
+    # the old rule coloured EVERY div inside a slider cyan, which turned the whole slider into one solid block
+    assert '[data-baseweb="slider"] div {{' not in css
+
+
+def test_plotly_default_template_is_dark_and_transparent():
+    pytest.importorskip("plotly")
+    import plotly.io as pio
+    import app_ui.theme  # noqa: F401  (needs streamlit)
+    t = pio.templates[pio.templates.default]
+    assert t.layout.plot_bgcolor == "rgba(0,0,0,0)" and t.layout.paper_bgcolor == "rgba(0,0,0,0)"
+
+
+# ---------------------------------------------------------------- maps open on Karachi, never on the whole world
+def _map_view():
+    pytest.importorskip("streamlit"); pytest.importorskip("plotly")
+    from app_ui.components import map_view
+    return map_view
+
+
+def test_map_view_defaults_to_karachi_when_there_are_no_usable_points():
+    mv = _map_view()
+    for args in ((None, None), ([], []), ([float("nan")], [67.0]), (["x"], [1]), ([200.0], [67.0])):
+        v = mv(*args)
+        assert v["center"] == {"lat": config.KARACHI_CENTER[0], "lon": config.KARACHI_CENTER[1]}
+        assert v["zoom"] == config.KARACHI_MAP_ZOOM
+
+
+def test_map_view_fits_the_points_inside_the_viewport():
+    import math
+    mv = _map_view()
+    lats, lons = [24.82, 25.03, 24.9], [66.95, 67.20, 67.05]
+    v = mv(lats, lons, width_px=900, height_px=380)
+    assert 8 <= v["zoom"] <= 15 and 24.8 < v["center"]["lat"] < 25.1 and 66.9 < v["center"]["lon"] < 67.3
+    deg_per_px = 360.0 / (256.0 * 2 ** v["zoom"])                      # longitude degrees per pixel
+    assert 900 * deg_per_px >= (max(lons) - min(lons))                 # all longitudes visible
+    lat_span_visible = 380 * deg_per_px * math.cos(math.radians(v["center"]["lat"]))
+    assert lat_span_visible >= (max(lats) - min(lats)) * 0.98          # all latitudes visible (Mercator-corrected)
+
+
+def test_single_point_zooms_to_street_level_and_far_points_stay_clamped():
+    mv = _map_view()
+    assert mv([24.9], [67.0])["zoom"] >= 12
+    assert mv([0.0, 60.0], [0.0, 120.0])["zoom"] == 8                   # whole-world spread never goes below 8
+
+
+def test_every_map_in_the_app_goes_through_the_karachi_helper():
+    for rel in ("app.py", os.path.join("app_ui", "fusion_pages.py")):
+        src = open(os.path.join(ROOT, rel), encoding="utf-8").read()
+        assert 'map_style="carto-darkmatter"' not in src, f"{rel} still builds its own map layout"
+    assert "px.scatter_map" not in open(os.path.join(ROOT, "app_ui", "components.py"), encoding="utf-8").read()
+
+
+# ---------------------------------------------------------------- About page, credit line, Model Lab tile
+def test_about_page_and_scope_tile():
+    app = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    theme = open(os.path.join(ROOT, "app_ui", "theme.py"), encoding="utf-8").read()
+    assert "Muhammad Saad Ahmed" in app and "kp-dev-mono" in app and "kp-credit" not in app   # sidebar credit removed
+    assert ".kp-dev-name" in theme and ".kp-dev-grid" in theme and ".kp-metric-value-sm" in theme
+    assert 'section_header("ABOUT", "KRYPTA")' not in app                      # no duplicate KRYPTA heading above the logo
+    assert 'metric_tile("Scope", det.scope)' in app and "COCO baseline" in app   # long baseline text moved out of the tile value
+
+
+def test_every_config_attribute_used_by_the_ui_exists():
+    """Regression: app.py once referenced config.VERSION, which does not exist (crashed the About page)."""
+    import re
+    import config
+    for fn in ("app.py", os.path.join("app_ui", "fusion_pages.py"), os.path.join("app_ui", "components.py")):
+        src = open(os.path.join(ROOT, fn), encoding="utf-8").read()
+        missing = sorted({n for n in re.findall(r"\bconfig\.(?!py\b)([A-Za-z_][A-Za-z0-9_]*)", src) if not hasattr(config, n)})
+        assert not missing, f"{fn} uses undefined config attributes: {missing}"

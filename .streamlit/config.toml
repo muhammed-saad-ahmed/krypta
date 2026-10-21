@@ -1,0 +1,11 @@
+# KRYPTA theme. Forces Streamlit's own widgets (dropdown lists, calendars, tooltips, tables) to the dark palette even
+# when the browser / operating system is set to light mode. Without this the pop-up lists render white-on-white.
+[theme]
+base = "dark"
+primaryColor = "#3DD6F5"
+backgroundColor = "#070A0F"
+secondaryBackgroundColor = "#101722"
+textColor = "#F5F7FA"
+
+[browser]
+gatherUsageStats = false

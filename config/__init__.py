@@ -40,6 +40,8 @@ if "KP_DB_PATH" not in os.environ and not os.path.exists(DB_PATH) and os.path.ex
     DB_PATH = "data/karachi_pulse.db"          # keep using a database created before the rename
 PROCESSING_VERSION = "2.1.0"
 KARACHI_BBOX = (24.70, 66.80, 25.60, 67.60)  # lat_min, lon_min, lat_max, lon_max
+KARACHI_CENTER = (24.90, 67.08)           # (lat, lon) where every map opens when there is nothing to fit
+KARACHI_MAP_ZOOM = 10.0
 MAX_IMAGE_MB, MAX_VIDEO_MB, MAX_FILES, MAX_VIDEO_SECONDS = 10, 100, 10, 60
 DUP_RADIUS_M = 25.0
 MIN_CONFIDENCE = 0.35
@@ -90,7 +92,7 @@ EDGE_INT8_REQUIRE_SPEEDUP = False         # many laptop CPUs lack the INT8 instr
 
 # ============================================================== 3. OSINT scraping pipeline
 OSINT_USER_AGENT = ("KryptaResearchBot/2.1 (+https://github.com/muhammed-saad-ahmed/"
-                    "Karachi-infrastructure-intelligence; independent research prototype)")
+                    "krypta; independent research prototype)")
 OSINT_MIN_DELAY_S = 2.0                   # minimum gap between two requests to the SAME host
 OSINT_MAX_CONCURRENCY = 4                 # global cap on in-flight requests
 OSINT_REQUEST_TIMEOUT_S = 15.0
