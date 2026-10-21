@@ -52,7 +52,18 @@ def inject_global_css():
         .kp-mono {{ font-family: 'JetBrains Mono', monospace; }}
 
         .stApp {{ background: {BG}; color: {TEXT}; }}
-        #MainMenu, header[data-testid="stHeader"], footer {{ visibility: hidden; height: 0; }}
+        /* Keep the header (it hosts the sidebar open/close arrow) but make it invisible chrome:
+           hiding the whole header made it impossible to re-open a collapsed sidebar. */
+        #MainMenu, footer, [data-testid="stMainMenu"], [data-testid="stAppDeployButton"],
+        [data-testid="stStatusWidget"], [data-testid="stDecoration"] {{ visibility: hidden; height: 0; }}
+        header[data-testid="stHeader"] {{ background: transparent; box-shadow: none; }}
+        [data-testid="stSidebarCollapsedControl"], [data-testid="stExpandSidebarButton"],
+        [data-testid="stSidebarCollapseButton"], [data-testid="stSidebarCollapseButton"] button {{
+            visibility: visible !important; opacity: 1 !important; color: {ACCENT} !important; }}
+        [data-testid="stSidebarCollapsedControl"] button, [data-testid="stExpandSidebarButton"] {{
+            background: {SURFACE_2} !important; border: 1px solid {ACCENT_DIM} !important; border-radius: 10px !important; }}
+        [data-testid="stSidebarCollapsedControl"] svg, [data-testid="stExpandSidebarButton"] svg,
+        [data-testid="stSidebarCollapseButton"] svg {{ color: {ACCENT} !important; fill: {ACCENT} !important; }}
         .block-container {{ padding-top: 1.5rem; padding-bottom: 3.5rem; max-width: 1320px; }}
         ::selection {{ background: {ACCENT_SOFT}; color: {TEXT}; }}
         *:focus-visible {{ outline: 2px solid {ACCENT} !important; outline-offset: 2px; }}
@@ -276,8 +287,13 @@ def inject_global_css():
 
         .kp-divider {{ height: 1px; background: {BORDER}; margin: 1.1rem 0; border: none; }}
 
+        @media (max-width: 768px) {{
+            /* phone: the sidebar is a slide-over drawer, never a half-page column */
+            section[data-testid="stSidebar"] {{ width: min(86vw, 320px) !important; min-width: 0 !important; }}
+            section[data-testid="stSidebar"][aria-expanded="false"] {{ margin-left: calc(-1 * min(86vw, 320px)) !important; }}
+        }}
         @media (max-width: 640px) {{
-            .block-container {{ padding-left: 0.85rem; padding-right: 0.85rem; }}
+            .block-container {{ padding-top: 3.2rem; padding-left: 0.85rem; padding-right: 0.85rem; }}
             h1 {{ font-size: 1.55rem; }}
             .kp-metric-value {{ font-size: 1.55rem; }}
             .kp-card {{ padding: 0.95rem 1.05rem; }}

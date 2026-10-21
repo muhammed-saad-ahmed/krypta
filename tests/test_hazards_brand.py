@@ -249,3 +249,14 @@ def test_every_config_attribute_used_by_the_ui_exists():
         src = open(os.path.join(ROOT, fn), encoding="utf-8").read()
         missing = sorted({n for n in re.findall(r"\bconfig\.(?!py\b)([A-Za-z_][A-Za-z0-9_]*)", src) if not hasattr(config, n)})
         assert not missing, f"{fn} uses undefined config attributes: {missing}"
+
+
+def test_sidebar_can_always_be_reopened_and_is_a_drawer_on_phones():
+    """Regression: the whole header was hidden, so a collapsed sidebar could never be re-opened;
+    and the sidebar started expanded on phones, covering half the page."""
+    theme = open(os.path.join(ROOT, "app_ui", "theme.py"), encoding="utf-8").read()
+    app = open(os.path.join(ROOT, "app.py"), encoding="utf-8").read()
+    assert 'header[data-testid="stHeader"], footer' not in theme            # header must not be hidden
+    assert "stSidebarCollapsedControl" in theme and "stExpandSidebarButton" in theme
+    assert "max-width: 768px" in theme and "86vw" in theme
+    assert 'initial_sidebar_state="auto"' in app and 'initial_sidebar_state="expanded"' not in app

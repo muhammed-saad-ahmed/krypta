@@ -20,7 +20,7 @@ from app_ui.components import (metric_tile, confidence_bar, section_header, hero
                                 incident_dossier, nav_group, go_to, draw_detections, grouped_detections,
                                 detection_group_row, class_color_hex, logo_html, karachi_map)
 
-st.set_page_config("KRYPTA — Karachi Risk & YOLO-driven Platform for Terrain Analysis", layout="wide", initial_sidebar_state="expanded")
+st.set_page_config("KRYPTA — Karachi Risk & YOLO-driven Platform for Terrain Analysis", layout="wide", initial_sidebar_state="auto")
 inject_global_css()
 
 NAV_GROUPS = {
