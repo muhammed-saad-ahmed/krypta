@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.1.0-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.2.0-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="Python" src="https://img.shields.io/badge/built%20with-Python%20%2B%20Streamlit-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="Cost" src="https://img.shields.io/badge/cost-%240%20free%20tools-3DD6F5?style=flat-square&labelColor=0C111A">
@@ -27,7 +27,7 @@
 > *Not an official municipal system, safety rating, government service, or production-ready hazard detection system.*
 
 **Author:** Muhammad Saad Ahmed ([LinkedIn](https://www.linkedin.com/in/muhammed-saad-ahmed) · [GitHub](https://github.com/muhammed-saad-ahmed))  
-**Version:** 2.1.0 (multi-modal edition, hardened)
+**Version:** 2.2.0 (multi-modal edition, production modules)
 **License:** MIT
 
 ---
@@ -37,7 +37,7 @@
 **KRYPTA** explores whether three cheap, independent evidence streams can be combined into an **auditable** urban-hazard picture for a resource-constrained megacity:
 
 1. **Edge computer vision** — a YOLOv8-nano detector exported to ONNX and run on a CPU/phone, so there is no inference server to pay for.
-2. **Community reports (OSINT)** — public civic-hazard posts in English, Roman Urdu and Urdu, collected politely, geolocated offline and de-duplicated.
+2. **Community reports (OSINT)** — public civic-hazard posts in standard English and Urdu script (Roman Urdu is deliberately not supported and is refused), collected politely, kept only if they fall inside Karachi's bounding box, geolocated offline and de-duplicated.
 3. **Satellite cross-verification** — Sentinel-2 (free, via Microsoft Planetary Computer) NDWI/NDVI change detection to check whether a reported flood left a mark on the ground.
 
 They are fused by a transparent, hand-checkable algorithm into a **5×5 likelihood × impact hazard risk matrix**, stored in SQLite with an **append-only, hash-chained audit ledger** so any later edit is detectable.
@@ -72,7 +72,7 @@ YOLOv8-nano → ONNX → ONNX Runtime on CPU. Aspect-preserving letterbox, singl
 **Limitation:** no trained pothole / open-manhole / sewage weights ship with this repository — that needs a properly collected, consented, geotagged, labelled dataset. The module is the deployment path for the weights you train.
 
 ### 2. OSINT pipeline (`scripts/osint_pipeline.py`, `scripts/osint_text.py`, `geospatial/gazetteer.py`)
-Asynchronous, polite collection (robots.txt incl. Crawl-delay, per-host rate limit, retries with exponential backoff + jitter, circuit breaker, size caps) of RSS/Atom and CSS-selector HTML sources (optional Playwright for JavaScript pages). A deterministic **mock stream** simulates a rate-limited public feed so everything runs offline. Posts get **embedding-based** hazard/urgency/sentiment scores (ONNX multilingual sentence encoder when installed, dependency-free n-gram fallback otherwise) with a negation / intensity / sarcasm parser for English and Roman Urdu, offline geocoding (explicit coordinates, map links, or a Karachi neighbourhood gazetteer with an explicit uncertainty radius), salted author pseudonyms, redaction of emails/phones/@mentions, and near-duplicate suppression so a viral copy-paste cannot fake corroboration.
+Asynchronous, polite collection (robots.txt incl. Crawl-delay, per-host rate limit, retries with exponential backoff + jitter, circuit breaker, size caps) of RSS/Atom and CSS-selector HTML sources (optional Playwright for JavaScript pages). A deterministic **mock stream** simulates a rate-limited public feed so everything runs offline. Posts get **embedding-based** hazard/urgency/sentiment scores (ONNX multilingual sentence encoder when installed, dependency-free n-gram fallback otherwise) with a negation / intensity parser and a rule-based sarcasm detector (high-intensity praise paired with a hazard term) for English and Urdu script, an explicit English<->Urdu alignment dictionary, a strict Karachi bounding-box filter (lat 24.75-25.15, lon 66.85-67.35) that drops out-of-area reports, offline geocoding (explicit coordinates, map links, or a Karachi neighbourhood gazetteer with an explicit uncertainty radius), salted author pseudonyms, redaction of emails/phones/@mentions, and near-duplicate suppression so a viral copy-paste cannot fake corroboration.
 
 **Limitations:** the bundled fallback embedder is orthographic, not semantic (install the ONNX encoder for real cross-lingual matching, see `docs/multimodal_fusion.md` section 6.3); sarcasm and long-range negation still fool it; thresholds are untuned on real Karachi text; gazetteer coordinates are approximate. **Scrape only what you are allowed to** — most social networks forbid it in their terms; prefer RSS, official complaint portals and open data.
 
@@ -270,6 +270,7 @@ krypta/
     ├── test_v3.py                LSMA/shadow, Monte-Carlo + Metropolis, semantic text, location privacy
     ├── test_int8_pipeline.py     augmentation, calibration set, tensor agreement, latency, INT8 gates
     ├── test_hazards_brand.py     hazard config/text regressions (false 'resolved', open-gutter), brand checks
+    ├── test_v4_modules.py        v2.2: mAP evaluator, Karachi bbox filter, English+Urdu text and sarcasm rule, ledger rollback
     └── tiny_onnx.py              Builds a stub ONNX model (no `onnx` package needed) for runtime tests
 ```
 

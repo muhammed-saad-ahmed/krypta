@@ -20,16 +20,26 @@ Tamper-evidence model (be precise about what this does and does not give you):
       determined attacker who rewrites the whole file can rebuild the chain. Publishing the chain head
       (`ledger_head()`) somewhere external (a git commit, a tweet) anchors it.
     Nothing here makes a local SQLite file "un-tamperable"; it makes tampering detectable.
+
+Rollback (v2.2): before every ledger append the chain is re-verified and, if it is intact, the whole database is
+snapshotted to `krypta_backup.db` (next to the live file, atomic write, mode 0600, with a signed manifest). If the
+chain is ever found broken - at an append, or by `full_audit()` - the corrupted file is first copied to
+`krypta_corrupted_<utc>.db` for forensics, the last verified snapshot is restored, and `LedgerTamperError` is raised so
+the caller (and the UI's red alert) cannot miss it. A rollback loses at most the newest append.
 """
 import datetime
 import hashlib
 import hmac
+import glob
 import json
+import logging
 import os
 import sqlite3
 import threading
 
 import config
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS locations(id INTEGER PRIMARY KEY, lat REAL, lon REAL, area TEXT, road_segment TEXT);
@@ -160,6 +170,269 @@ def connect(path):
     c.executescript(SCHEMA)
     c.executescript(TRIGGERS)
     return c
+
+
+# =============================================================== tamper handling: snapshot, rollback, alert state
+class LedgerTamperError(RuntimeError):
+    """The audit trail no longer verifies. Carries what was found and what was done about it."""
+
+    def __init__(self, message, *, report=None, rolled_back=False, backup_path=None, quarantine_path=None,
+                 restored_head=None, source="audit", rollback_error=None):
+        super().__init__(message)
+        self.report = report or {}
+        self.rolled_back = rolled_back
+        self.backup_path = backup_path
+        self.quarantine_path = quarantine_path
+        self.restored_head = restored_head
+        self.source = source
+        self.rollback_error = rollback_error
+
+    def as_dict(self):
+        return {"message": str(self), "rolled_back": self.rolled_back, "backup_path": self.backup_path,
+                "quarantine_path": self.quarantine_path, "restored_head": self.restored_head, "source": self.source,
+                "rollback_error": self.rollback_error, "report": self.report}
+
+
+class BackupError(RuntimeError):
+    """The snapshot is missing, unreadable, altered, or itself fails verification; it is never restored."""
+
+
+_TAMPER_LOCK = threading.Lock()
+_LAST_TAMPER = None
+
+
+def last_tamper_event():
+    """The newest un-acknowledged tamper event (dict) or None. The UI polls this to show its red alert."""
+    with _TAMPER_LOCK:
+        return dict(_LAST_TAMPER) if _LAST_TAMPER and not _LAST_TAMPER.get("acknowledged") else None
+
+
+def acknowledge_tamper_event():
+    with _TAMPER_LOCK:
+        if _LAST_TAMPER:
+            _LAST_TAMPER["acknowledged"] = True
+
+
+def _record_tamper_event(err):
+    global _LAST_TAMPER
+    with _TAMPER_LOCK:
+        _LAST_TAMPER = {**err.as_dict(), "at": utc_now_iso(), "acknowledged": False}
+
+
+def _db_file(conn):
+    """Filesystem path of the main database of `conn`, or None for an in-memory / temporary database."""
+    for _seq, name, path in conn.execute("PRAGMA database_list"):
+        if name == "main":
+            return path or None
+    return None
+
+
+def backup_path_for(conn):
+    override = os.getenv(config.LEDGER_BACKUP_PATH_ENV, "").strip()
+    if override:
+        return override
+    f = _db_file(conn)
+    if f is None:
+        return None
+    return os.path.join(os.path.dirname(os.path.abspath(f)), config.LEDGER_BACKUP_FILENAME)
+
+
+def _manifest_path(backup_path):
+    return backup_path + ".manifest.json"
+
+
+def _file_sha256(path):
+    h = hashlib.sha256()
+    with open(path, "rb") as fh:
+        for chunk in iter(lambda: fh.read(1 << 20), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+
+def _manifest_signature(body):
+    key = _ledger_key()
+    msg = canonical_json(body).encode("utf-8")
+    return hmac.new(key, msg, hashlib.sha256).hexdigest() if key else hashlib.sha256(msg).hexdigest()
+
+
+def _atomic_write_text(path, text):
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as fh:
+        fh.write(text)
+    try:
+        os.chmod(tmp, 0o600)
+    except OSError:
+        pass
+    os.replace(tmp, path)
+
+
+def snapshot_backup(conn, backup_path=None):
+    """Writes a consistent copy of the whole database (SQLite online-backup API) to krypta_backup.db plus a manifest
+    {created_at, ledger head, sha256 of the file, signature}. The write is atomic (temp file + rename) so a crash can
+    never leave a half-written snapshot, and the file is mode 0600. Returns the manifest dict, or None when the
+    database is in memory or a transaction is open (a snapshot would not be consistent)."""
+    path = backup_path or backup_path_for(conn)
+    if path is None:
+        log.info("snapshot skipped: in-memory database has no file to back up")
+        return None
+    with _WRITE_LOCK:
+        if conn.in_transaction:
+            log.warning("snapshot skipped: a transaction is open on the connection")
+            return None
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+        tmp = path + ".tmp"
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        dst = sqlite3.connect(tmp)
+        try:
+            conn.backup(dst)
+        finally:
+            dst.close()
+        try:
+            os.chmod(tmp, 0o600)
+        except OSError:
+            pass
+        os.replace(tmp, path)
+        head_seq, head_hash = ledger_head(conn)
+        body = {"created_at": utc_now_iso(), "ledger_head_seq": head_seq, "ledger_head_hash": head_hash,
+                "sha256": _file_sha256(path), "alg": "hmac-sha256" if _ledger_key() else "sha256"}
+        manifest = {**body, "signature": _manifest_signature(body)}
+        _atomic_write_text(_manifest_path(path), json.dumps(manifest, indent=2, sort_keys=True))
+        return {**manifest, "path": path}
+
+
+def verify_backup(backup_path):
+    """Checks a snapshot BEFORE it may be restored: manifest present and correctly signed, file hash unchanged, and
+    the ledger inside the snapshot verifies and ends at the head the manifest recorded. -> {"ok", "problems", "manifest"}."""
+    problems, manifest = [], None
+    if not backup_path or not os.path.isfile(backup_path):
+        return {"ok": False, "problems": ["backup file does not exist"], "manifest": None}
+    mp = _manifest_path(backup_path)
+    try:
+        with open(mp, encoding="utf-8") as fh:
+            manifest = json.load(fh)
+    except (OSError, ValueError) as exc:
+        return {"ok": False, "problems": [f"manifest unreadable: {exc}"], "manifest": None}
+    body = {k: v for k, v in manifest.items() if k != "signature"}
+    if manifest.get("signature") != _manifest_signature(body):
+        problems.append("manifest signature mismatch (manifest edited, or KP_LEDGER_KEY differs)")
+    if _file_sha256(backup_path) != manifest.get("sha256"):
+        problems.append("backup file hash differs from its manifest (file was modified)")
+    if not problems:
+        src = sqlite3.connect(f"file:{backup_path}?mode=ro", uri=True)
+        try:
+            inner = verify_ledger(src)
+        except sqlite3.DatabaseError as exc:
+            inner = {"ok": False, "problems": [{"seq": 0, "problem": f"not a readable database: {exc}"}], "head_seq": 0,
+                     "head_hash": ""}
+        finally:
+            src.close()
+        if not inner["ok"]:
+            problems.append(f"the ledger inside the backup does not verify: {inner['problems'][:2]}")
+        elif (inner["head_seq"], inner["head_hash"]) != (manifest.get("ledger_head_seq"), manifest.get("ledger_head_hash")):
+            problems.append("ledger head inside the backup differs from the manifest")
+    return {"ok": not problems, "problems": problems, "manifest": manifest}
+
+
+def rollback_to_backup(conn, backup_path=None):
+    """Replaces the live database content with the last verified snapshot (online-backup API, so the open connection,
+    schema and append-only triggers all come back). Refuses - raising BackupError - if the snapshot fails
+    verify_backup(), or if the restored ledger does not verify. Returns {"restored_head", "backup_created_at", "path"}."""
+    path = backup_path or backup_path_for(conn)
+    check = verify_backup(path)
+    if not check["ok"]:
+        raise BackupError("; ".join(check["problems"]))
+    with _WRITE_LOCK:
+        if conn.in_transaction:
+            conn.rollback()
+        src = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+        try:
+            src.backup(conn)
+        finally:
+            src.close()
+        after = verify_ledger(conn)
+    if not after["ok"]:
+        raise BackupError(f"restored ledger still fails verification: {after['problems'][:2]}")
+    return {"restored_head": (after["head_seq"], after["head_hash"]), "backup_created_at": check["manifest"]["created_at"],
+            "path": path}
+
+
+def _quarantine_copy(conn, directory):
+    """Copy of the corrupted database kept for forensics; the newest LEDGER_QUARANTINE_KEEP copies are retained."""
+    stamp = utc_now_iso().replace(":", "").replace("-", "")
+    path = os.path.join(directory, f"krypta_corrupted_{stamp}.db")
+    try:
+        dst = sqlite3.connect(path)
+        try:
+            conn.backup(dst)
+        finally:
+            dst.close()
+        try:
+            os.chmod(path, 0o600)
+        except OSError:
+            pass
+        old = sorted(glob.glob(os.path.join(directory, "krypta_corrupted_*.db")))
+        for stale in old[:-max(1, int(config.LEDGER_QUARANTINE_KEEP))]:
+            try:
+                os.remove(stale)
+            except OSError:
+                pass
+        return path
+    except (sqlite3.Error, OSError) as exc:
+        log.error("could not write a quarantine copy of the corrupted database: %s", exc)
+        return None
+
+
+def handle_tamper(conn, report, *, auto_rollback=True, source="audit"):
+    """Always raises LedgerTamperError. Order: log CRITICAL -> quarantine copy of the corrupted file -> restore the last
+    verified snapshot (if auto_rollback) -> record the event for the UI alert -> raise. A missing KP_LEDGER_KEY is not
+    tampering and never triggers a rollback."""
+    problems = []
+    for grp in ("chain", "matrix", "evidence"):
+        problems.extend((report.get(grp) or {}).get("problems", []))
+    if not problems:
+        problems = report.get("problems", [])
+    only_key = bool(problems) and all(
+        str(p.get("problem", p) if isinstance(p, dict) else p).startswith("unverifiable") for p in problems)
+    log.critical("LEDGER_TAMPER_DETECTED source=%s problems=%s", source, problems[:5])
+    rolled, info, quarantine, rb_error = False, None, None, None
+    path = backup_path_for(conn)
+    if only_key:
+        rb_error = "entries were written with HMAC but KP_LEDGER_KEY is not set; no rollback attempted"
+    elif auto_rollback and path is not None:
+        quarantine = _quarantine_copy(conn, os.path.dirname(os.path.abspath(path)))
+        try:
+            info = rollback_to_backup(conn, path)
+            rolled = True
+            log.critical("LEDGER_ROLLBACK_DONE restored_head=%s backup_created_at=%s quarantine=%s",
+                         info["restored_head"], info["backup_created_at"], quarantine)
+        except BackupError as exc:
+            rb_error = str(exc)
+            log.critical("LEDGER_ROLLBACK_FAILED reason=%s", exc)
+    elif auto_rollback:
+        rb_error = "in-memory database: there is no snapshot to restore"
+    if rolled:
+        msg = (f"Ledger tampering detected ({len(problems)} problem(s)); database restored from the snapshot taken "
+               f"{info['backup_created_at']}. The corrupted copy was kept for inspection.")
+    else:
+        msg = (f"Ledger tampering detected ({len(problems)} problem(s)); the database was NOT restored"
+               f"{': ' + rb_error if rb_error else ''}.")
+    err = LedgerTamperError(msg, report=report, rolled_back=rolled, backup_path=path, quarantine_path=quarantine,
+                            restored_head=info["restored_head"] if info else None, source=source, rollback_error=rb_error)
+    _record_tamper_event(err)
+    raise err
+
+
+def guard_before_append(conn):
+    """Called by append_ledger. Verifies the chain; if broken -> handle_tamper (restore + raise). If intact -> snapshot.
+    A no-op when config.LEDGER_BACKUP_ENABLED is false or the database is in memory."""
+    if not config.LEDGER_BACKUP_ENABLED or backup_path_for(conn) is None:
+        return None
+    report = verify_ledger(conn)
+    if not report["ok"]:
+        handle_tamper(conn, {"ok": False, "chain": report, "head_seq": report["head_seq"],
+                             "head_hash": report["head_hash"]}, source="append_guard")
+    return snapshot_backup(conn)
 
 
 # =============================================================== v1 helpers (unchanged API)
@@ -326,12 +599,17 @@ def latest_satellite_check(conn, cell_key, max_age_hours):
 
 
 # =============================================================== ledger (hash chain)
-def append_ledger(conn, kind, payload):
-    """Appends one entry to the hash chain and returns (seq, entry_hash). Thread-safe."""
+def append_ledger(conn, kind, payload, *, backup=True):
+    """Appends one entry to the hash chain and returns (seq, entry_hash). Thread-safe.
+    Before writing, the existing chain is verified and the database snapshotted to krypta_backup.db (guard_before_append);
+    a broken chain triggers the automatic rollback and raises LedgerTamperError instead of appending to corrupted data.
+    backup=False skips both steps (bulk imports that snapshot once themselves)."""
     payload_json = payload if isinstance(payload, str) else canonical_json(payload)
     ts = utc_now_iso()
     alg = "hmac-sha256" if _ledger_key() else "sha256"
     with _WRITE_LOCK:
+        if backup and not conn.in_transaction:
+            guard_before_append(conn)
         if not conn.in_transaction:
             conn.execute("BEGIN IMMEDIATE")
         try:

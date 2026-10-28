@@ -1,4 +1,4 @@
-# KRYPTA v2.1 - lightweight runtime (CPU only, no PyTorch, no inference server).
+# KRYPTA v2.2 - lightweight runtime (CPU only, no PyTorch, no inference server).
 # Python 3.10+ ; tested on 3.13.
 streamlit
 numpy>=1.24

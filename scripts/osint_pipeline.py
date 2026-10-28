@@ -53,7 +53,7 @@ from typing import AsyncIterator, Awaitable, Callable, Iterable
 
 import config
 from database import db as kpdb
-from geospatial.gazetteer import geocode_text, known_places, privatize_location
+from geospatial.gazetteer import geocode_text, known_places, privatize_location, report_location_rejection
 from scripts import osint_text as nlp
 
 log = logging.getLogger(__name__)
@@ -94,6 +94,8 @@ class PipelineStats:
     inserted: int = 0
     already_seen: int = 0
     irrelevant: int = 0
+    rejected_out_of_bounds: int = 0
+    unsupported_language: int = 0
     resolved: int = 0
     near_duplicates: int = 0
     geocoded: int = 0
@@ -363,27 +365,27 @@ _TEMPLATES = {
         "en": ["Knee deep water on the road in {area} since this morning, cars are stuck. Nobody from KMC has come.",
                "{area}: rainwater standing for two days, flooded street, people are fed up #KarachiRains",
                "Road completely flooded near {area}. Dangerous for bikes and children."],
-        "roman-ur": ["{area} mein barsat ke baad pani jama hai, gaariyan phans gayi hain. Koi nahi sunta, kab tak?",
-                     "{area} ki sadak par paani jama hai 2 din se, bohat pareshan hain log"],
-        "ur": ["{area} میں بارش کا پانی جمع ہے، لوگ پریشان ہیں"]},
+        "ur": ["{area} میں بارش کا پانی جمع ہے، لوگ پریشان ہیں",
+               "{area} میں بارش کے بعد سڑک پر پانی جمع ہے، گاڑیاں پھنس گئی ہیں۔ کوئی نہیں سنتا، کب تک؟",
+               "{area} کی گلی میں پانی دو دن سے کھڑا پانی بنا ہوا ہے، لوگ بہت پریشان ہیں"]},
     "sewage_overflow": {
         "en": ["Sewage overflowing onto the street in {area}, the smell is unbearable and kids walk through it.",
                "Gutter overflow near {area} for weeks now, complaint ignored again"],
-        "roman-ur": ["{area} mein gutter ubal raha hai, gandagi ka pani sadak par aa gaya hai. bohat pareshan hain."],
-        "ur": ["{area} میں گٹر ابل رہا ہے، بدبو ناقابل برداشت ہے"]},
+        "ur": ["{area} میں گٹر ابل رہا ہے، بدبو ناقابل برداشت ہے",
+               "{area} میں گٹر کا پانی سڑک پر آ گیا ہے، لوگ بہت پریشان ہیں"]},
     "open_manhole": {
         "en": ["Manhole cover missing near {area}, very dangerous especially at night. Someone will fall in.",
                "Open manhole on the main road in {area}, urgent, a child almost fell"],
-        "roman-ur": ["{area} ke paas manhole ka dhakkan nahi hai, bacha gir sakta hai, khatarnak hai"]},
+        "ur": ["{area} کے قریب کھلا مین ہول ہے، بچہ گر سکتا ہے، بہت خطرناک ہے"]},
     "pothole": {
         "en": ["Huge pothole on the main road in {area}, bikes are slipping, terrible condition.",
                "Another pothole near {area}. Accident waiting to happen."],
-        "roman-ur": ["{area} mein sadak par bada gaddha hai, bikes phisal rahi hain, koi nahi sunta"]},
+        "ur": ["{area} میں سڑک پر بڑا گڑھا ہے، موٹر سائیکلیں پھسل رہی ہیں، کوئی نہیں سنتا"]},
 }
 _NOISE = ["Great biryani in {area} tonight!", "Traffic moving smoothly near {area} this evening.",
           "Beautiful sunset over the sea in Karachi today", "Anyone know a good dentist in {area}?"]
 _RESOLVED = ["The pothole in {area} has been fixed. Thanks to everyone who reported it!",
-             "{area} gutter line cleaned and theek ho gaya, thank you"]
+             "{area} میں گٹر کی لائن صاف ہو گیا، شکریہ"]
 
 
 class MockStream:
@@ -471,6 +473,12 @@ class OSINTPipeline:
     # -- one post
     async def process(self, raw: RawPost, stats: PipelineStats | None = None):
         stats = stats if stats is not None else PipelineStats()
+        reason = report_location_rejection(raw.lat, raw.lon, raw.text, source=f"{raw.platform}:{raw.post_id}")
+        if reason is not None:                       # strict Karachi bounding box: dropped before anything is stored
+            stats.scraped += 1
+            stats.rejected_out_of_bounds += 1
+            log.error("REPORT_REJECTED platform=%s post_id=%s reason=%s", raw.platform, raw.post_id, reason)
+            return None
         text = nlp.redact(raw.text)[:2000]           # contact details AND coordinates are removed from the stored text
         if not text.strip():
             return None
@@ -501,6 +509,7 @@ class OSINTPipeline:
         stats.inserted += 1
         self._dups.add(post_id, text)
         stats.irrelevant += a["status"] == "irrelevant"
+        stats.unsupported_language += not a.get("supported", True)
         stats.resolved += a["status"] == "resolved"
         stats.near_duplicates += near_dup is not None
         stats.geocoded += geo is not None

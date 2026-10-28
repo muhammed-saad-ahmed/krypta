@@ -19,16 +19,21 @@ LOCATION PRIVACY (bottom of this file)
 """
 from __future__ import annotations
 
+import collections
 import hashlib
 import hmac
+import logging
 import math
 import random
 import re
+import threading
 
 import numpy as np
 
 import config
 from geospatial.clustering import valid_coord
+
+log = logging.getLogger(__name__)
 
 # name -> (lat, lon, uncertainty_radius_m, aliases...)
 _RAW = {
@@ -89,13 +94,115 @@ _COORD_RES = (
 )
 
 
+# ---------------------------------------------------------------- Karachi spatial hardening
+KARACHI_LAT_RANGE = (config.KARACHI_ADMIN_BBOX[0], config.KARACHI_ADMIN_BBOX[2])     # 24.7500 .. 25.1500
+KARACHI_LON_RANGE = (config.KARACHI_ADMIN_BBOX[1], config.KARACHI_ADMIN_BBOX[3])     # 66.8500 .. 67.3500
+
+
+class OutsideKarachiError(ValueError):
+    """A coordinate lies outside Karachi's administrative bounding box (or is not a usable number)."""
+
+
+_REJECTION_LOCK = threading.Lock()
+_REJECTION_COUNT = 0
+_REJECTION_RECENT = collections.deque(maxlen=200)     # newest last: dicts {lat, lon, source, reason}
+
+
+def _reject(lat, lon, source, reason):
+    global _REJECTION_COUNT
+    with _REJECTION_LOCK:
+        _REJECTION_COUNT += 1
+        _REJECTION_RECENT.append({"lat": lat, "lon": lon, "source": source, "reason": reason})
+    log.error("SPATIAL_REJECTION reason=%s lat=%r lon=%r source=%s allowed_lat=[%.4f,%.4f] allowed_lon=[%.4f,%.4f]",
+              reason, lat, lon, source or "unknown", KARACHI_LAT_RANGE[0], KARACHI_LAT_RANGE[1],
+              KARACHI_LON_RANGE[0], KARACHI_LON_RANGE[1])
+
+
+def rejection_stats():
+    """{"total": int, "recent": [dict, ...]} for every coordinate rejected by the Karachi filter since start-up."""
+    with _REJECTION_LOCK:
+        return {"total": _REJECTION_COUNT, "recent": list(_REJECTION_RECENT)}
+
+
+def reset_rejection_stats():
+    global _REJECTION_COUNT
+    with _REJECTION_LOCK:
+        _REJECTION_COUNT = 0
+        _REJECTION_RECENT.clear()
+
+
+def is_within_karachi(lat, lon, *, source=None, log_rejection=True):
+    """True only if (lat, lon) is a finite number pair with 24.7500 <= lat <= 25.1500 and 66.8500 <= lon <= 67.3500.
+    Everything else (outside the box, NaN/inf, None, strings that are not numbers, swapped lat/lon) returns False and,
+    unless log_rejection=False, writes a structured SPATIAL_REJECTION error to the log and the in-memory rejection list."""
+    try:
+        la, lo = float(lat), float(lon)
+    except (TypeError, ValueError):
+        if log_rejection:
+            _reject(lat, lon, source, "not_a_number")
+        return False
+    if not (math.isfinite(la) and math.isfinite(lo)):
+        if log_rejection:
+            _reject(lat, lon, source, "not_finite")
+        return False
+    if not (KARACHI_LAT_RANGE[0] <= la <= KARACHI_LAT_RANGE[1] and KARACHI_LON_RANGE[0] <= lo <= KARACHI_LON_RANGE[1]):
+        if log_rejection:
+            _reject(la, lo, source, "outside_karachi_bbox")
+        return False
+    return True
+
+
+def require_within_karachi(lat, lon, *, source=None):
+    """Like is_within_karachi but raises OutsideKarachiError (after logging) instead of returning False."""
+    if not is_within_karachi(lat, lon, source=source):
+        raise OutsideKarachiError(f"coordinate ({lat!r}, {lon!r}) from {source or 'unknown source'} is outside Karachi "
+                                  f"(lat {KARACHI_LAT_RANGE}, lon {KARACHI_LON_RANGE})")
+    return float(lat), float(lon)
+
+
+# any coordinate-looking pair, wherever on Earth, so that a post pinned to Lahore or London is recognised and dropped
+_ANY_COORD_RES = (
+    re.compile(r"@(-?\d{1,3}\.\d+),\s*(-?\d{1,3}\.\d+)"),
+    re.compile(r"[?&](?:q|ll|query|destination)=(-?\d{1,3}\.\d+)(?:,|%2C)\s*(-?\d{1,3}\.\d+)"),
+    re.compile(r"(?<![\d.])(-?\d{2}\.\d{4,})\s*[,;/ ]\s*(-?\d{2,3}\.\d{4,})(?![\d])"),
+)
+
+
+def all_coordinate_pairs(text: str):
+    """Every (lat, lon) pair that looks like a coordinate in `text`, in order of appearance, duplicates removed."""
+    seen, out = set(), []
+    for rx in _ANY_COORD_RES:
+        for m in rx.finditer(text or ""):
+            pair = (float(m.group(1)), float(m.group(2)))
+            if pair not in seen and valid_coord(pair[0], pair[1]):
+                seen.add(pair)
+                out.append(pair)
+    return out
+
+
 def extract_explicit_coords(text: str):
-    """First coordinate pair in `text` that lies inside Karachi's bounding box, else None."""
+    """First coordinate pair in `text` that lies inside Karachi's administrative box, else None."""
     for rx in _COORD_RES:
         for m in rx.finditer(text or ""):
             lat, lon = float(m.group(1)), float(m.group(2))
-            if valid_coord(lat, lon, config.KARACHI_BBOX):
+            if is_within_karachi(lat, lon, source="text", log_rejection=False):
                 return lat, lon
+    return None
+
+
+def report_location_rejection(lat=None, lon=None, text=None, *, source=None):
+    """Decide whether a whole OSINT report must be dropped for its location. Returns a reason string or None.
+    Rejected: coordinates supplied by the source that are outside Karachi, or a text that carries coordinates but
+    none of them inside Karachi. A report with no coordinates at all is not rejected here (it simply has no point)."""
+    if lat is not None or lon is not None:
+        if not is_within_karachi(lat, lon, source=source or "source_coordinates"):
+            return "source_coordinates_outside_karachi"
+        return None
+    pairs = all_coordinate_pairs(text or "")
+    if pairs and not any(is_within_karachi(la, lo, log_rejection=False) for la, lo in pairs):
+        la, lo = pairs[0]
+        is_within_karachi(la, lo, source=source or "text_coordinates")      # logs the structural rejection
+        return "text_coordinates_outside_karachi"
     return None
 
 
@@ -247,7 +354,7 @@ def privatize_point(lat, lon, privacy, *, rng=None, bbox=None):
     dlat = r * math.sin(theta) / M_PER_DEG_LAT
     dlon = r * math.cos(theta) / (M_PER_DEG_LAT * max(math.cos(math.radians(lat)), 1e-6))
     new_lat, new_lon = lat + dlat, lon + dlon
-    bbox = config.KARACHI_BBOX if bbox is None else bbox
+    bbox = config.KARACHI_ADMIN_BBOX if bbox is None else bbox
     clamped = False
     if bbox is not None:
         c_lat, c_lon = min(max(new_lat, bbox[0]), bbox[2]), min(max(new_lon, bbox[1]), bbox[3])

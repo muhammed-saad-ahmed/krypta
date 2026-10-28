@@ -13,7 +13,8 @@ from database.db import (connect as db_connect, insert_observation, insert_detec
                          fetch_detections, fetch_risk_matrix)
 from risk_engine import fusion
 from app_ui.fusion_pages import (render_risk_matrix, render_osint_feed, render_satellite_check,
-                                  render_edge_panel, render_sensitivity, render_privacy_panel)
+                                  render_edge_panel, render_sensitivity, render_privacy_panel,
+                                  render_tamper_alert)
 from app_ui.theme import inject_global_css, risk_color, TEXT, TEXT_MUTED, TEXT_FAINT, ACCENT, VERSION
 from app_ui.components import (metric_tile, confidence_bar, section_header, hero, radial_gauge,
                                 pipeline_diagram, empty_state, error_state, footer, privacy_badge,
@@ -116,6 +117,7 @@ with st.sidebar:
         f'Processing v{config.PROCESSING_VERSION}</div></div>', unsafe_allow_html=True)
 
 page = st.session_state.active_page
+render_tamper_alert()          # red banner on every page while an un-acknowledged ledger-tamper event exists
 
 # ================================================================ COMMAND CENTER
 if page == "Command Center":
@@ -722,6 +724,17 @@ elif page == "Model Lab":
                 with r2: metric_tile("Recall", f"{o['recall']:.0%}")
                 with r3: metric_tile("F1", f"{o['f1']:.0%}")
                 with r4: metric_tile("Mean inference", f"{result['mean_inference_ms']} ms")
+                if result.get("map"):
+                    m1, m2, m3, m4 = st.columns(4)
+                    with m1: metric_tile("mAP@0.5", f"{result['map']['map_50']:.1%}")
+                    with m2: metric_tile("mAP@0.5:0.95", f"{result['map']['map_50_95']:.1%}")
+                    with m3: metric_tile("Ground-truth boxes", str(result["map"]["n_gt"]))
+                    with m4: metric_tile("Invalid boxes skipped", str(result["map"]["invalid_boxes"]))
+                    st.dataframe(pd.DataFrame([{"class": k, **v} for k, v in result["map"]["per_class"].items()]),
+                                 width="stretch")
+                    if result["map"]["spurious_classes"]:
+                        st.caption("Predicted classes with no ground truth (counted as false positives, excluded from "
+                                   "mAP): " + ", ".join(result["map"]["spurious_classes"]))
                 st.caption(f"Computed live on {result['n_images']} matched image(s) at IoU ≥ 0.5 — these are real "
                            "numbers from your uploaded data, not fabricated placeholders.")
                 st.dataframe(pd.DataFrame(result["per_image"]), width="stretch")
@@ -788,7 +801,7 @@ elif page == "Research":
                  "INT8 quantization needs real calibration images and must be validated; no trained hazard weights ship with the repo.")
     with st.expander("OSINT pipeline"):
         st.write("Async, polite (robots.txt, rate limits, backoff) collection of public civic-hazard reports; lexicon-based English/"
-                 "Roman-Urdu/Urdu analysis; offline gazetteer geocoding; author hashing; near-duplicate suppression (scripts/osint_pipeline.py).")
+                 "English/Urdu-script analysis (Roman Urdu unsupported); Karachi bounding-box filter; offline gazetteer geocoding; author hashing; near-duplicate suppression (scripts/osint_pipeline.py).")
     with st.expander("Satellite verification"):
         st.write("Sentinel-2 L2A via Microsoft Planetary Computer: NDWI/NDVI change against a dry-period baseline, SCL cloud masking, "
                  "explicit INCONCLUSIVE / NOT_APPLICABLE verdicts (geospatial/satellite.py).")

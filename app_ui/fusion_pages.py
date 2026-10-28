@@ -62,6 +62,52 @@ def _hist_cell(m, l, i):
     return int(((m["likelihood_band"] == l) & (m["impact_band"] == i)).sum())
 
 
+# ====================================================================== tamper alert
+_SHIELD_SVG = ('<svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="1.9" '
+               'stroke-linecap="round" stroke-linejoin="round"><path d="M12 2l8 3v6c0 5-3.4 9.3-8 11-4.6-1.7-8-6-8-11V5z"/>'
+               '<path d="M12 8v5"/><circle cx="12" cy="16.2" r="0.6" fill="currentColor"/></svg>')
+
+
+def tamper_alert_html(event):
+    """HTML for the red alert card. `event` is kpdb.last_tamper_event() or LedgerTamperError.as_dict()."""
+    import html as _h
+    rolled = bool(event.get("rolled_back"))
+    head = ("LEDGER TAMPERING DETECTED - DATABASE ROLLED BACK" if rolled else
+            "LEDGER TAMPERING DETECTED - DATABASE NOT RESTORED")
+    probs = []
+    for grp in ("chain", "matrix", "evidence"):
+        for p in (event.get("report", {}).get(grp) or {}).get("problems", [])[:3]:
+            probs.append(_h.escape(str(p.get("problem", p) if isinstance(p, dict) else p)))
+    lines = [f"<div class='kp-alert-body'>{_h.escape(str(event.get('message', '')))}</div>"]
+    if probs:
+        lines.append("<div class='kp-alert-body'><b>First problems found:</b> " + " &middot; ".join(probs) + "</div>")
+    meta = []
+    if event.get("restored_head"):
+        meta.append(f"restored chain head seq={event['restored_head'][0]}")
+    if event.get("quarantine_path"):
+        meta.append(f"corrupted copy: {_h.escape(os.path.basename(event['quarantine_path']))}")
+    if event.get("rollback_error"):
+        meta.append(f"rollback: {_h.escape(str(event['rollback_error']))}")
+    if event.get("at"):
+        meta.append(f"detected {event['at']}")
+    if meta:
+        lines.append(f"<div class='kp-alert-meta'>{' | '.join(meta)}</div>")
+    cls = "kp-alert kp-alert-ok" if rolled else "kp-alert"
+    return f"<div class='{cls}'><div class='kp-alert-head'>{_SHIELD_SVG}{head}</div>{''.join(lines)}</div>"
+
+
+def render_tamper_alert(event=None, *, ack_button=True):
+    """Shows the red alert for the newest un-acknowledged tamper event (or `event`). Returns True if one was shown."""
+    ev = event or kpdb.last_tamper_event()
+    if not ev:
+        return False
+    st.markdown(tamper_alert_html(ev), unsafe_allow_html=True)
+    if ack_button and st.button("Acknowledge alert", key="kp_ack_tamper"):
+        kpdb.acknowledge_tamper_event()
+        st.rerun()
+    return True
+
+
 # ====================================================================== risk matrix
 def render_risk_matrix(conn):
     section_header("MULTI-MODAL FUSION", "Hazard Risk Matrix",
@@ -70,7 +116,10 @@ def render_risk_matrix(conn):
     use_rain = top[0].checkbox("Include rainfall scenario", False)
     rain = top[1].slider("Rainfall (mm)", 0, 150, 25, disabled=not use_rain)
     if top[2].button("Re-assess now", width="stretch"):
-        fusion.assess_all(conn, rainfall_mm=rain if use_rain else None)
+        try:
+            fusion.assess_all(conn, rainfall_mm=rain if use_rain else None)
+        except kpdb.LedgerTamperError:
+            pass                                    # the red alert below reports it; the database is already rolled back
         st.rerun()
     if top[3].button("Run offline demo", width="stretch", type="primary"):
         from scripts.generate_demo_data import seed_fusion_demo
@@ -89,7 +138,13 @@ def render_risk_matrix(conn):
     if m["is_synthetic"].any():
         st.warning(SYN_NOTE)
 
-    audit = fusion.full_audit(conn)
+    try:
+        audit = fusion.full_audit(conn)
+    except kpdb.LedgerTamperError as err:
+        audit = dict(err.report)
+        if err.rolled_back:
+            st.rerun()                              # re-render from the restored database; the global alert stays up
+        render_tamper_alert(err.as_dict(), ack_button=False)
     c = st.columns(4)
     with c[0]: metric_tile("Hazard cells", f"{len(m):,}")
     with c[1]: metric_tile("High + critical", f"{int(m.matrix_category.isin(['High', 'Critical']).sum()):,}",
@@ -233,7 +288,7 @@ def render_osint_feed(conn):
     st.dataframe(v[["id", "posted_at", "hazard_type", "community_signal", "urgency", "negativity", "status", "lang",
                     "geo_place", "geo_method", "geo_radius_m", "duplicate_of", "text"]], width="stretch", height=380)
     st.caption("community_signal = hazard_strength x (0.75 + 0.25 x max(negativity, urgency)) (+ small media bonus). "
-               "Lexicon-based, not a trained model: sarcasm, negation and Roman-Urdu spelling variants are known weaknesses. "
+               "Lexicon-based, not a trained model: sarcasm, negation and Urdu spelling variants are known weaknesses; Roman Urdu is not supported. "
                "Duplicates are stored but ignored by fusion.")
     counts = v["hazard_type"].value_counts().reset_index()
     counts.columns = ["hazard", "posts"]

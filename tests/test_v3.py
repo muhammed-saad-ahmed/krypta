@@ -182,20 +182,20 @@ def _a(t, **k):
 
 
 def test_spelling_variants_of_pothole_all_match():
-    for t in ("sadak mein gaddha hai", "road par gadha hai bohat", "gaddhe hi gaddhe hain sadak par", "big pothole on road",
-              "potholes everywhere"):
+    for t in ("سڑک میں گڑھا ہے", "سڑک پر بڑا گڑھا ہے", "سڑک پر گڑھے ہی گڑھے ہیں", "big pothole on road",
+              "potholes everywhere", "Pothole!!", "POTHOLES on the road"):
         r = _a(t)
         assert r["hazard_type"] == "pothole" and r["hazard_strength"] > 0.3, (t, r)
-    assert _a("pani jama hai gali mein")["hazard_type"] == "waterlogging"
-    assert _a("gutter ubal raha hai")["hazard_type"] == "sewage_overflow"
+    assert _a("گلی میں پانی جمع ہے")["hazard_type"] == "waterlogging"
+    assert _a("گٹر ابل رہا ہے")["hazard_type"] == "sewage_overflow"
 
 
-def test_negation_roman_urdu_and_english():
-    for t in ("koi gaddha nahi hai", "there is no pothole here", "pani jama nahi hai", "not flooded at all"):
+def test_negation_urdu_and_english():
+    for t in ("سڑک پر کوئی گڑھا نہیں ہے", "there is no pothole here", "پانی جمع نہیں ہے", "not flooded at all"):
         r = _a(t)
         assert r["hazard_strength"] == 0.0 and r["negated"], (t, r)
-    assert not _a("pani jama hai, koi nahi sunta")["negated"]            # 'nahi' belongs to the next clause
-    assert _a("manhole ka dhakkan nahi hai")["hazard_type"] == "open_manhole"   # seed contains the negator: hazard
+    assert not _a("پانی جمع ہے، کوئی نہیں سنتا")["negated"]               # 'نہیں' belongs to the next clause
+    assert _a("مین ہول کا ڈھکن نہیں ہے")["hazard_type"] == "open_manhole"       # seed contains the negator: hazard
 
 
 def test_intensity_scales_strength():
@@ -205,7 +205,7 @@ def test_intensity_scales_strength():
 
 
 def test_sarcasm_detected_and_damps_urgency():
-    s = _a("wah kya sadak hai, gaddhe hi gaddhe")
+    s = _a("واہ کیا سڑک ہے، گڑھے ہی گڑھے")
     assert s["sarcasm"] and s["negativity"] >= 0.6
     assert not _a("the road is nice but potholes everywhere")["sarcasm"]
     fixed = _a("thanks for fixing the pothole, it has been repaired")
@@ -227,8 +227,8 @@ def test_mean_pool_ignores_padding():
 
 def test_seed_bank_runtime_additions_and_validation():
     b = nlp.SeedBank({"pothole": [("pothole", .8)]})
-    b.add("pothole", "khaddah", .6)
-    b.add("pothole", "KHADDAH", .6)                                      # duplicate ignored (case-insensitive)
+    b.add("pothole", "road crater", .6)
+    b.add("pothole", "ROAD CRATER", .6)                                      # duplicate ignored (case-insensitive)
     assert len(b.phrases("pothole")) == 2
     with pytest.raises(ValueError):
         b.add("pothole", "", .5)
@@ -239,9 +239,9 @@ def test_seed_bank_runtime_additions_and_validation():
 def test_onnx_embedder_with_stub_encoder_and_injected_tokenizer(tmp_path):
     pytest.importorskip("onnxruntime")
     import tiny_onnx
-    vocab = ["<pad>", "pothole", "gaddha", "flood", "pani", "hello", "road"]
+    vocab = ["<pad>", "pothole", "گڑھا", "flood", "pani", "hello", "road"]
     table = np.eye(len(vocab), 8, dtype=np.float32) + 0.01
-    table[2] = table[1]                                                  # 'gaddha' embeds exactly like 'pothole'
+    table[2] = table[1]                                                  # Urdu 'گڑھا' embeds exactly like 'pothole'
     path = tmp_path / "model.onnx"
     path.write_bytes(tiny_onnx.build_gather_encoder_model(table))
 
@@ -253,11 +253,11 @@ def test_onnx_embedder_with_stub_encoder_and_injected_tokenizer(tmp_path):
             return [Enc([vocab.index(w) if w in vocab else 5 for w in t.lower().split()] or [0]) for t in texts]
 
     emb = nlp.OnnxSentenceEmbedder(str(path), tokenizer=Tok())
-    v = emb.encode(["pothole", "gaddha", "flood"])
+    v = emb.encode(["pothole", "گڑھا", "flood"])
     assert emb.name == "onnx-sentence-encoder" and v.shape == (3, 8)
     assert np.allclose(np.linalg.norm(v, axis=1), 1, atol=1e-5)
     assert v[0] @ v[1] > .999 and v[0] @ v[2] < .5                       # cross-lingual match comes from the model
-    r = nlp.analyze_text("gaddha", embedder=emb)
+    r = nlp.analyze_text("گڑھا", embedder=emb)
     assert r["backend"] == "onnx-sentence-encoder" and r["hazard_type"] == "pothole"
 
 

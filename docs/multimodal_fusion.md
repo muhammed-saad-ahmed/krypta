@@ -1,6 +1,6 @@
 # Multi-modal pipeline (v2): edge CV, OSINT, Sentinel-2, evidence fusion
 
-This document is the technical specification for the four v2 modules (sections 1-5) and the v2.1 hardening (section 6). Every constant mentioned lives in
+This document is the technical specification for the four v2 modules (sections 1-5) and the v2.1 hardening (section 6) and the v2.2 production modules (section 7). Every constant mentioned lives in
 `config/__init__.py`; every claim here is backed by a test in `tests/test_v2.py`.
 
 ```text
@@ -51,7 +51,7 @@ per-host circuit breaker, http/https only, size cap. RSS/Atom parsing rejects `D
 HTML sources use CSS selectors from a JSON spec; `html_js` sources render with Playwright. `MockStream` is a deterministic
 synthetic feed (irrelevant posts, resolved posts, copy-paste duplicates, multi-author bursts) for offline work.
 
-**Analysis** (lexicon-based, no ML — see "Honesty" below): English, Roman Urdu and Urdu script.
+**Analysis** (lexicon-based, no ML — see "Honesty" below): standard English and Urdu script. Roman Urdu is NOT supported: it is recognised and refused (see 7.3).
 
 ```
 hazard_strength  = noisy-OR of matched hazard-term weights
@@ -167,7 +167,7 @@ What the integrity checks give you — and what they do not:
 ### 6.3 Semantic text analysis (`scripts/osint_text.py`)
 * A post is split into clauses and candidate 1-4 word spans. Each span is embedded and compared by **cosine similarity** with banks of seed phrases (hazards, urgency, negativity, resolved, praise); the nearest seed's similarity is mapped to 0..1 and scaled by that seed's prior. Add seeds without code: `data/hazard_seeds.json` or `SeedBank.add`.
 * **Two embedders, same interface.** `OnnxSentenceEmbedder` runs a multilingual MiniLM / MobileBERT sentence encoder on ONNX Runtime/CPU (mean pooling, L2 norm). `HashedNgramEmbedder` is the dependency-free fallback. **The model is not bundled** (licence, size, and it could not be downloaded in the build environment), so the fallback is what runs out of the box. The fallback is **orthographic, not semantic**: it handles spelling variants (khadda/khada/khara, gaddha/gadha/gaddhay, paani/pani) but not synonyms or true cross-lingual meaning. Every result carries `backend`.
-* **Structural parser** (closed-class words, not a hazard dictionary): negation (English pre-negators, Roman-Urdu/Urdu post-negators, comma-bounded clauses, handles seeds that contain a negator such as "manhole ka dhakkan nahi" = cover missing), intensity multipliers (bohat, very, thora, slight; bounded to 0.6-1.3), and **sarcasm** (praise in the same sentence as an un-negated hazard, or in an adjacent sentence marked by `!!`/`?!`; thanks-for-fixing is *resolved*, not sarcasm; contrast words like "but" end a sentence). Sarcasm halves urgency and floors negativity at 0.6. Ambiguous cases (denied hazard + praise/irony) set `needs_review`.
+* **Structural parser** (closed-class words, not a hazard dictionary): negation (English pre-negators, Urdu post-negators such as نہیں, comma-bounded clauses, handles seeds that contain a negator such as "ڈھکن نہیں" = cover missing), intensity multipliers (bohat, very, thora, slight; bounded to 0.6-1.3), and **sarcasm** (praise in the same sentence as an un-negated hazard, or in an adjacent sentence marked by `!!`/`?!`; thanks-for-fixing is *resolved*, not sarcasm; contrast words like "but" end a sentence). Sarcasm halves urgency and floors negativity at 0.6. Ambiguous cases (denied hazard + praise/irony) set `needs_review`.
 * **Install the real encoder (once, on any machine with internet; free Colab is fine):**
   ```bash
   pip install "optimum[exporters]" tokenizers
@@ -193,6 +193,53 @@ python -m scripts.dataset_formatter int8  --model models/custom/hazard_n.onnx --
 * **Clustering stays usable, but it is not perfect.** The recorded uncertainty radius grows to `hypot(original, sqrt(2) * r95)` (two independently noised reports of one spot differ by ~sqrt 2 x the single-report noise), so fusion still groups neighbours, at the price of a weaker evidence weight for them. Several reports of one hot-spot recover its centroid to well under 120 m (tested); one report is only locatable to a few hundred metres. **Perfect clustering under local differential privacy is mathematically impossible**; this is a stated trade-off, tunable with `KP_LDP_LEVEL` / `KP_LDP_RADIUS_M`.
 * **Repeat reporters:** independent noise on repeated reports of the same spot would let an observer average it away (privacy loss composes k x epsilon). The noise is therefore *sticky*: seeded by HMAC(`KP_PRIVACY_SALT`, author hash + ~55 m grid cell), so the same author at the same spot always gets the same displacement. Anonymous reports get fresh noise. Different spots by one author still compose.
 * **Scope of the guarantee:** it protects the stored coordinate. It does not protect against someone who can identify the author from the text itself, from timing, or from a distinctive photo, and it is only as strong as the salt is secret. Synthetic demo posts are exempt unless `KP_LDP_SYNTHETIC=1`. Set `KP_LDP=0` to disable.
+
+## 7. v2.2 production modules
+
+### 7.1 Object-detection mAP (`evaluation/metrics.py`)
+`calculate_map(ground_truth_json, predicted_json)` evaluates detections with NumPy only. Inputs may be parsed objects, JSON strings or file
+paths, as `{image: [{label, bbox:[x1,y1,x2,y2], confidence}]}` or a flat list with an `image` key. Boxes are matched **per class** in confidence
+order (COCO rule): each prediction claims the best still-unmatched ground-truth box with IoU >= t, so a duplicate box on the same object is a
+false positive. It returns per-class `gt / predictions / tp / fp / fn / precision / recall / f1 / mean_iou / ap50 / ap50_95`, plus `map_50`
+and `map_50_95` (IoU 0.50:0.05:0.95), 101-point (COCO/Ultralytics) or exact-area (`interpolation="voc"`) AP. Labels match case-insensitively
+(`open_manhole` = `Open Manhole`). Malformed boxes (NaN, zero area, no label) are skipped, logged and counted in `invalid_boxes`. Predicted classes
+absent from the ground truth count as false positives and are excluded from the mAP mean. The Model Lab evaluation shows these numbers.
+
+### 7.2 Karachi spatial hardening (`geospatial/gazetteer.py`, `config.KARACHI_ADMIN_BBOX`)
+`is_within_karachi(lat, lon)` is True only for 24.7500 <= lat <= 25.1500 and 66.8500 <= lon <= 67.3500 (NaN, None, strings, swapped axes all fail).
+Every failure logs `SPATIAL_REJECTION reason=... source=...` and is kept in `rejection_stats()`. `OSINTPipeline.process` drops a report whose
+source coordinates, or whose in-text coordinates, lie outside the box (`PipelineStats.rejected_out_of_bounds`); fusion and location-privacy
+clamping use the same box. Reports with no coordinates are not dropped (they simply have no point). The wider `KARACHI_BBOX` remains the
+satellite area-of-interest only. The box is approximate administrative extent, not a legal boundary.
+
+### 7.3 English + Urdu-script text (`scripts/osint_text.py`)
+Supported: standard English and Urdu in Urdu script. **Roman Urdu is not supported**: `detect_language` recognises it (>= 2 distinct function-word
+markers and >= 20% of the words) and `analyze_text` returns `supported=False`, `flags=["unsupported_language"]`, no hazard; other scripts return `lang="other"`.
+* **Alignment dictionary** `ALIGNMENT`: per concept, an English list and an Urdu list naming the same thing (pothole / گڑھا, cracked asphalt / سڑک خراب,
+  open manhole / کھلا مین ہول, sewage overflow / گٹر کا پانی / سیوریج, flooded street / گلی میں پانی ...). `ALIGNED_PAIRS` lists the equivalences.
+  The seed bank is generated from it, and a deterministic **lexicon layer** (exact normalised phrase lookup) runs next to the embedding similarity,
+  so a listed term is always recognised whichever embedder is installed. Negation and intensity apply to both.
+* **Urdu normalisation** `normalize_urdu`: NFKC, diacritics/tatweel removed, Arabic yeh/kaf/heh/alef folded to the Urdu letters, ZWNJ handled,
+  Arabic-Indic digits to ASCII, Urdu punctuation (۔ ، ؟ ؛) treated as sentence/clause boundaries.
+* **Rule-based sarcasm**: a report is flagged (`sarcasm=True`, `sarcasm_rule="praise+hazard"`, `needs_review=True`, `flags=["sarcasm"]`) when a
+  high-intensity praise phrase (`HIGH_INTENSITY_PRAISE`: "excellent work", "great job", "well done", "بہت شکریہ", "شاباش", "واہ واہ" ...) appears in the same
+  text block as an un-negated classified hazard term, unless a resolved claim is present ("great job fixing the pothole"). Urgency is damped and
+  negativity floored, as for structural sarcasm. Limits: praise inside a quotation, long ironic passages and unlisted phrases are missed.
+
+### 7.4 Snapshot, rollback and alert (`database/db.py`, `risk_engine/fusion.py`, `app_ui/fusion_pages.py`)
+* Before every `append_ledger`, the chain is re-verified and, if intact, the whole database is snapshotted (SQLite online-backup API, atomic rename,
+  mode 0600) to `krypta_backup.db` beside the live file, with `krypta_backup.db.manifest.json` (ledger head, SHA-256 of the file, signature; HMAC when
+  `KP_LEDGER_KEY` is set). `append_ledger(..., backup=False)` skips this for bulk work; in-memory databases and open transactions are skipped.
+* If the chain does not verify (at an append, or in `full_audit()`): CRITICAL log -> the corrupted file is copied to `krypta_corrupted_<utc>.db`
+  (last 5 kept) -> the snapshot is verified (manifest signature, file hash, the ledger inside it) and restored -> `LedgerTamperError` is raised.
+  A snapshot that fails verification is never restored; the exception then says `rolled_back=False`. A missing `KP_LEDGER_KEY` is reported but never
+  triggers a rollback. A rollback loses at most the newest append.
+* `full_audit(conn)` now **raises** on any mismatch (chain, matrix-vs-ledger, evidence digests); `full_audit(conn, raise_on_tamper=False)` returns the failing
+  report for read-only inspection; `auto_rollback=False` raises without restoring.
+* UI: a red pulsing alert (rolled back / NOT restored, first problems, quarantine file) shows on every page until acknowledged
+  (`kpdb.last_tamper_event()`), and the Risk Matrix page shows the same state in its integrity tile.
+* Limits (be honest): this detects and undoes tampering by someone who cannot also rewrite the snapshot and manifest without the key. An attacker who
+  controls the machine and has no key issue can replace both. Set `KP_LEDGER_KEY` and publish the chain head externally for stronger guarantees.
 
 ## Honesty about what is and isn't validated
 

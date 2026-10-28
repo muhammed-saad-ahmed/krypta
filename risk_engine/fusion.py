@@ -119,7 +119,7 @@ def collect_cv(conn, since_iso=None):
         rows = conn.execute(q, args).fetchall()
     for oid, src, ts, lat, lon, model, mver, synth, did, label, conf in rows:
         hazard = config.HAZARD_LABEL_MAP.get(str(label).lower())
-        if hazard is None or not valid_coord(lat, lon, config.KARACHI_BBOX):
+        if hazard is None or not valid_coord(lat, lon, config.KARACHI_ADMIN_BBOX):
             continue
         k = (oid, hazard)
         if k not in best or (conf or 0) > best[k]["raw"]:
@@ -139,7 +139,7 @@ def collect_osint(conn, since_iso=None):
         lat, lon = r.get("lat"), r.get("lon")
         if lat is None or lon is None or (isinstance(lat, float) and math.isnan(lat)):
             continue
-        if not valid_coord(lat, lon, config.KARACHI_BBOX):
+        if not valid_coord(lat, lon, config.KARACHI_ADMIN_BBOX):
             continue
         author = r.get("author_hash")
         items.append({"modality": "osint", "hazard": r["hazard_type"], "lat": float(lat), "lon": float(lon),
@@ -394,8 +394,17 @@ def verify_evidence(conn):
     return {"ok": not problems, "problems": problems}
 
 
-def full_audit(conn):
-    """One call for the UI: chain + matrix-vs-ledger + evidence digests."""
+def full_audit(conn, *, raise_on_tamper=True, auto_rollback=True):
+    """One call for the UI: chain + matrix-vs-ledger + evidence digests.
+
+    Returns the audit dict when everything verifies. If ANYTHING fails (hash-chain mismatch, a matrix row that no longer
+    agrees with its ledger entry, edited evidence) and raise_on_tamper is true, this raises kpdb.LedgerTamperError after
+    quarantining the corrupted file and - with auto_rollback - restoring the last verified snapshot
+    (see database/db.py: handle_tamper). raise_on_tamper=False returns the failing report instead (read-only inspection,
+    no rollback, no exception)."""
     chain, matrix, evidence = kpdb.verify_ledger(conn), verify_matrix(conn), verify_evidence(conn)
-    return {"ok": chain["ok"] and matrix["ok"] and evidence["ok"], "chain": chain, "matrix": matrix,
-            "evidence": evidence, "head_seq": chain["head_seq"], "head_hash": chain["head_hash"]}
+    report = {"ok": chain["ok"] and matrix["ok"] and evidence["ok"], "chain": chain, "matrix": matrix,
+              "evidence": evidence, "head_seq": chain["head_seq"], "head_hash": chain["head_hash"]}
+    if not report["ok"] and raise_on_tamper:
+        kpdb.handle_tamper(conn, report, auto_rollback=auto_rollback, source="full_audit")
+    return report

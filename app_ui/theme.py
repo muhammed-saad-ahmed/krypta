@@ -34,7 +34,7 @@ ACCENT_DIM = "#1B8AA3"
 RISK_COLORS = {"Low": "#3AA76D", "Moderate": "#E8C547", "High": "#E8842C", "Critical": "#E14B4B",
                "Medium": "#E8842C"}
 
-VERSION = "2.1.0"
+VERSION = "2.2.0"
 
 
 def risk_color(level: str) -> str:
@@ -230,6 +230,21 @@ def inject_global_css():
         .kp-metric-value-sm {{ font-size: 1.12rem !important; line-height: 1.3 !important; word-break: break-word;
                                overflow-wrap: anywhere; }}
         .kp-metric-delta {{ overflow-wrap: anywhere; }}
+
+        /* ---- ledger tamper alert (red, pulsing) ---- */
+        @keyframes kp-pulse {{ 0% {{ box-shadow: 0 0 0 0 rgba(229,72,77,0.55); }} 70% {{ box-shadow: 0 0 0 14px rgba(229,72,77,0); }}
+                               100% {{ box-shadow: 0 0 0 0 rgba(229,72,77,0); }} }}
+        .kp-alert {{ border: 1px solid #E5484D; border-left: 6px solid #E5484D; border-radius: 14px; padding: 1rem 1.2rem;
+                     margin: 0 0 1.1rem 0; background: linear-gradient(120deg, rgba(229,72,77,0.16), rgba(229,72,77,0.04));
+                     animation: kp-pulse 2.2s ease-out infinite; }}
+        .kp-alert-ok {{ border-color: #F5A524; border-left-color: #F5A524; background: linear-gradient(120deg, rgba(245,165,36,0.14), rgba(245,165,36,0.03));
+                        animation: none; }}
+        .kp-alert-head {{ display: flex; align-items: center; gap: 0.6rem; font-family: 'Space Grotesk', sans-serif;
+                          font-weight: 700; font-size: 1.05rem; color: #FF8A8D; letter-spacing: 0.02em; }}
+        .kp-alert-ok .kp-alert-head {{ color: #FFC15C; }}
+        .kp-alert-body {{ color: {TEXT}; font-size: 0.9rem; line-height: 1.55; margin-top: 0.35rem; }}
+        .kp-alert-meta {{ font-family: 'JetBrains Mono', monospace; font-size: 0.7rem; color: {TEXT_FAINT}; margin-top: 0.5rem;
+                          word-break: break-all; }}
 
         /* ---- About page ---- */
         .kp-about-logo {{ text-align: center; padding: 0.4rem 0 0.8rem 0; }}

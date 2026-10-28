@@ -135,8 +135,8 @@ def test_quantization_refuses_too_few_calibration_images(tmp_path):
 # ====================================================================== text / gazetteer / privacy
 def test_text_hazards_across_languages():
     assert nlp.analyze_text("Knee deep water in Gulshan, flooded street")["hazard_type"] == "waterlogging"
-    r = nlp.analyze_text("Gulshan mein pani jama hai, koi nahi sunta, bacha gir gaya")
-    assert r["hazard_type"] == "waterlogging" and r["lang"] == "roman-ur" and r["urgency"] > .4
+    r = nlp.analyze_text("گلشن میں بارش کا پانی جمع ہے، کوئی نہیں سنتا، بچہ گر گیا")
+    assert r["hazard_type"] == "waterlogging" and r["lang"] == "ur" and r["urgency"] > .4
     assert nlp.analyze_text("گلشن اقبال میں گٹر ابل رہا ہے")["hazard_type"] == "sewage_overflow"
     assert nlp.analyze_text("Missing manhole cover, dangerous for children")["hazard_type"] == "open_manhole"
 
@@ -528,7 +528,10 @@ def test_matrix_row_edit_is_caught_against_ledger(conn):
     conn.executescript("DROP TRIGGER trg_rm_no_update;")
     conn.execute("UPDATE risk_matrix SET risk_score=99.9"); conn.commit()
     r = fu.verify_matrix(conn)
-    assert not r["ok"] and "risk_score" in r["problems"][0]["problem"] and not fu.full_audit(conn)["ok"]
+    assert not r["ok"] and "risk_score" in r["problems"][0]["problem"]
+    assert not fu.full_audit(conn, raise_on_tamper=False)["ok"]          # read-only inspection: report, no exception
+    with pytest.raises(kpdb.LedgerTamperError):                          # default: tampering is an exception
+        fu.full_audit(conn, auto_rollback=False)
 
 
 def test_osint_text_edit_is_caught_by_content_digest(conn):

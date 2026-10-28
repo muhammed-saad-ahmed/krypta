@@ -42,6 +42,7 @@ import logging
 import os
 import re
 import threading
+import unicodedata
 from collections import deque
 
 import numpy as np
@@ -50,75 +51,121 @@ import config
 
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------- seed phrases: (phrase, prior)
-# `prior` = how strongly a clean match should count ("gaddha" can also be an insult, so it carries 0.45).
-HAZARD_SEEDS = {
-    "pothole": [("pothole", .80), ("potholes", .80), ("road crater", .70), ("caved in", .55), ("cave in", .55),
-                ("sinkhole", .60), ("gaddha", .45), ("gaddhe", .45), ("khadda", .45),
-                ("sadak mein gaddha", .70), ("sadak par gaddhe", .70), ("tooti road", .60),
-                ("گڑھا", .55), ("گڑھے", .55)],
-    "open_manhole": [("open manhole", .90), ("manhole", .65), ("missing manhole", .90), ("manhole cover", .70),
-                     ("uncovered manhole", .90), ("khula manhole", .90), ("manhole ka dhakkan", .85), ("manhole ka dhakkan nahi", .90),
-                     ("gutter ka dhakkan", .85), ("gutter ka dhakkan khula", .90), ("khula gutter", .85),
-                     ("khule gutter", .85), ("gutter khula", .85), ("gutter cover", .70), ("gutter ka dhakkan nahi", .90),
-                     ("dhakkan nahi", .70), ("dhakan nahi", .70), ("dhakkan ghaib", .80),
-                     ("مین ہول", .70), ("ڈھکن", .55)],
-    "sewage_overflow": [("sewage", .70), ("sewerage", .70), ("sewer", .60), ("overflowing sewer", .90),
-                        ("gutter overflow", .90), ("gutter", .55), ("gutar", .55), ("gutter ubal", .90),
-                        ("ubal raha", .55), ("ubalti", .55), ("gutter choke", .70), ("choked drain", .70), ("sewerage line leak", .70), ("gandagi ka pani", .75), ("sewerage ka pani", .90),
-                        ("گٹر", .65), ("سیوریج", .70), ("ابل", .35)],
-    "waterlogging": [("waterlogging", .90), ("water logging", .90), ("waterlogged", .85), ("flooded", .70),
-                     ("flooding", .65), ("flood", .50), ("standing water", .75), ("rainwater", .50),
-                     ("rain water", .50), ("inundated", .80), ("knee deep", .70), ("pani jama", .85),
-                     ("pani khara", .75), ("pani khada", .75), ("barsat ka pani", .65), ("sailab", .55),
-                     ("stagnant water", .70), ("water accumulation", .65), ("pani bhar gaya", .75), ("pani bhara hua", .70), ("pani bhar jata", .65),
-                     ("samandar bana hua", .60), ("swimming pool ban gaya", .60), ("naav chalane", .55),
-                     ("پانی جمع", .85), ("بارش کا پانی", .60), ("سیلاب", .55)],
-    "open_drain": [("open drain", .85), ("open nala", .85), ("nullah", .55), ("nala overflow", .85),
-                   ("nala", .45), ("drain overflow", .75), ("نالہ", .50), ("نالے", .50)],
-    "garbage": [("garbage", .60), ("trash", .50), ("rubbish", .50), ("dumped waste", .60), ("kachra", .60),
-                ("kooda", .50), ("kachre ka dher", .70), ("کچرا", .60), ("کوڑا", .50)],
-    "road_damage": [("broken road", .75), ("damaged road", .75), ("road damaged", .75), ("cracked road", .70),
-                    ("road collapsed", .85), ("sadak toot", .70), ("tooti hui sadak", .75), ("ٹوٹی سڑک", .75)],
+# ---------------------------------------------------------------- English <-> Urdu-script alignment dictionary
+# SUPPORTED LANGUAGES: standard English and Urdu in Urdu script (Unicode Arabic block). Roman Urdu ("pani jama hai") is
+# NOT supported: such a post is recognised by detect_language() and reported as unsupported, never scored.
+# One row per civic concept; the English list and the Urdu list name the SAME thing, so the two languages stay aligned
+# and a reviewer can extend either side. (phrase, prior): prior = how strongly a clean match counts.
+ALIGNMENT = {
+    "pothole": {
+        "en": [("pothole", .80), ("potholes", .80), ("road crater", .70), ("sinkhole", .60), ("caved in road", .60),
+               ("road cave in", .55), ("hole in the road", .70)],
+        "ur": [("گڑھا", .65), ("گڑھے", .65), ("گڑھوں", .60), ("سڑک میں گڑھا", .80), ("سڑک پر گڑھے", .80),
+               ("سڑک میں گڑھے", .80), ("بڑا گڑھا", .75)]},
+    "road_damage": {
+        "en": [("cracked asphalt", .75), ("broken asphalt", .75), ("crumbling asphalt", .75), ("asphalt cracks", .65),
+               ("broken road", .75), ("damaged road", .75), ("road damaged", .75), ("cracked road", .70),
+               ("road collapsed", .85), ("bad road", .55)],
+        "ur": [("سڑک خراب", .75), ("سڑک کی حالت خراب", .75), ("ٹوٹی سڑک", .75), ("ٹوٹی ہوئی سڑک", .75),
+               ("سڑک ٹوٹ گئی", .75), ("سڑک ٹوٹی ہوئی", .75), ("خستہ حال سڑک", .75), ("سڑک بیٹھ گئی", .80)]},
+    "open_manhole": {
+        "en": [("open manhole", .90), ("missing manhole", .90), ("uncovered manhole", .90), ("manhole cover missing", .90),
+               ("manhole", .65), ("manhole cover", .70), ("gutter cover missing", .85), ("open gutter", .80)],
+        "ur": [("کھلا مین ہول", .90), ("کھلے مین ہول", .90), ("مین ہول کھلا", .90), ("مین ہول کا ڈھکن غائب", .92),
+               ("ڈھکن کے بغیر مین ہول", .90), ("ڈھکن غائب", .80), ("ڈھکن نہیں", .70), ("کھلا گٹر", .85),
+               ("مین ہول", .65), ("ڈھکن", .55)]},
+    "sewage_overflow": {
+        "en": [("sewage overflow", .92), ("overflowing sewer", .90), ("sewer overflow", .90), ("sewage", .70),
+               ("sewerage", .70), ("sewer", .60), ("gutter overflow", .90), ("choked drain", .70),
+               ("sewerage line leak", .70), ("sewage water", .80)],
+        "ur": [("گٹر کا پانی", .88), ("گٹر ابل رہا", .92), ("گٹر ابل پڑا", .92), ("ابلتا گٹر", .90), ("سیوریج", .70),
+               ("سیوریج کا پانی", .90), ("سیوریج اوور فلو", .92), ("گندا پانی", .75), ("گٹر", .60)]},
+    "waterlogging": {
+        "en": [("flooded street", .85), ("flooded road", .85), ("waterlogging", .90), ("water logging", .90),
+               ("waterlogged", .85), ("flooded", .70), ("flooding", .65), ("flood", .50), ("standing water", .75),
+               ("stagnant water", .70), ("rainwater", .50), ("rain water", .50), ("inundated", .80), ("knee deep", .70),
+               ("water accumulation", .65)],
+        "ur": [("گلی میں پانی", .80), ("سڑک پر پانی", .80), ("پانی جمع", .85), ("جمع شدہ پانی", .80),
+               ("بارش کا پانی", .60), ("سیلاب", .55), ("پانی بھر گیا", .80), ("زیر آب", .80), ("کھڑا پانی", .75),
+               ("سڑکیں زیر آب", .85)]},
+    "open_drain": {
+        "en": [("open drain", .85), ("open nala", .85), ("nullah", .55), ("nala overflow", .85), ("drain overflow", .75),
+               ("open sewer line", .75)],
+        "ur": [("کھلا نالہ", .85), ("کھلی نالی", .80), ("نالہ ابل", .85), ("نالہ", .50), ("نالے", .50)]},
+    "garbage": {
+        "en": [("garbage", .60), ("trash", .50), ("rubbish", .50), ("dumped waste", .60), ("garbage pile", .75)],
+        "ur": [("کچرا", .60), ("کوڑا", .50), ("کچرے کا ڈھیر", .75), ("کوڑے کا ڈھیر", .75), ("گندگی کا ڈھیر", .70)]},
 }
+# cross-language equivalences, for documentation and tests: (concept, English term, Urdu term)
+ALIGNED_PAIRS = (
+    ("pothole", "pothole", "گڑھا"),
+    ("road_damage", "cracked asphalt", "سڑک خراب"),
+    ("open_manhole", "open manhole", "کھلا مین ہول"),
+    ("sewage_overflow", "sewage overflow", "گٹر کا پانی"),
+    ("sewage_overflow", "sewage", "سیوریج"),
+    ("waterlogging", "flooded street", "گلی میں پانی"),
+)
+
+
+def _flatten(concept):
+    return [item for lang in ("en", "ur") for item in ALIGNMENT[concept][lang]]
+
+
+HAZARD_SEEDS = {concept: _flatten(concept) for concept in ALIGNMENT}
+
 URGENCY_SEEDS = [("child", .60), ("children", .60), ("kid", .50), ("baby", .55), ("accident", .55), ("injured", .70),
                  ("injury", .60), ("died", .90), ("death", .85), ("dead", .85), ("drowned", .95), ("fell into", .75),
-                 ("fell", .45), ("gir gaya", .60), ("electrocuted", .85), ("life threatening", .85), ("emergency", .60),
-                 ("urgent", .50), ("dangerous", .45), ("bacha", .60), ("hadsa", .60), ("zakhmi", .70), ("mar gaya", .90),
-                 ("foran", .45), ("khatarnak", .45), ("بچہ", .60), ("بچے", .60), ("حادثہ", .60), ("زخمی", .70),
-                 ("خطرناک", .45), ("فوری", .45)]
+                 ("fell", .45), ("electrocuted", .85), ("life threatening", .85), ("emergency", .60),
+                 ("urgent", .50), ("dangerous", .45),
+                 ("بچہ", .60), ("بچے", .60), ("بچوں", .60), ("حادثہ", .60), ("زخمی", .70), ("ہلاک", .90), ("موت", .85),
+                 ("مر گیا", .90), ("ڈوب گیا", .95), ("گر گیا", .60), ("خطرناک", .45), ("فوری", .45), ("ایمرجنسی", .60)]
 NEGATIVITY_SEEDS = [("terrible", .50), ("horrible", .55), ("worst", .60), ("disgusting", .55), ("fed up", .60),
                     ("nobody cares", .70), ("ignored", .55), ("helpless", .55), ("complaint", .40), ("complained", .45),
-                    ("weeks", .35), ("months", .45), ("unbearable", .60), ("pareshan", .50), ("tang aa gaye", .60),
-                    ("masla", .35), ("masail", .40), ("koi nahi sunta", .70), ("kab tak", .50), ("bura haal", .55),
-                    ("zimmedar kon", .45), ("پریشان", .50), ("مسئلہ", .35), ("کب تک", .50)]
+                    ("weeks", .35), ("months", .45), ("unbearable", .60),
+                    ("پریشان", .50), ("مسئلہ", .35), ("مسائل", .40), ("کب تک", .50), ("کوئی نہیں سنتا", .70),
+                    ("تنگ آ گئے", .60), ("بدترین", .60), ("ناقابل برداشت", .60), ("مہینوں", .45), ("ہفتوں", .35)]
 RESOLVED_SEEDS = [("fixed", .9), ("repaired", .9), ("cleared", .9), ("resolved", .9), ("cleaned", .9),
-                  ("covered now", .9), ("has been covered", .9), ("theek ho gaya", .9), ("saaf ho gaya", .9),
-                  ("hal ho gaya", .9), ("kaam mukammal", .9), ("pani nikal gaya", .9), ("bhar diya gaya", .9),
-                  ("ٹھیک ہو گیا", .9), ("صاف ہو گیا", .9), ("حل ہو گیا", .9)]
-# surface praise: over a hazard it is the signature of sarcasm
-PRAISE_SEEDS = [("great", .8), ("awesome", .8), ("perfect", .8), ("brilliant", .8), ("amazing", .8), ("good job", .8), ("wah", .8), ("waah wah", .9), ("kya baat hai", .8), ("kya kehne", .8), ("zabardast", .8), ("kamal hai", .8),
-                ("mashallah", .8), ("shabash", .8), ("behtareen", .8), ("bohat khoob", .8), ("great job", .9),
-                ("wonderful", .8), ("lovely", .8), ("nice", .6), ("love it", .8), ("thank you", .6), ("thanks", .6),
-                ("shukriya", .6), ("bohat achi sadak", .9), ("mubarak ho", .8), ("bas yehi kami thi", .9),
-                ("kya sadak hai", .8), ("enjoy", .6), ("fantastic", .8), ("بہت خوب", .8), ("واہ", .8), ("شکریہ", .6)]
+                  ("covered now", .9), ("has been covered", .9),
+                  ("ٹھیک ہو گیا", .9), ("صاف ہو گیا", .9), ("حل ہو گیا", .9), ("مرمت ہو گئی", .9), ("کام مکمل", .9),
+                  ("پانی نکل گیا", .9), ("صاف کر دیا گیا", .9), ("ڈھکن لگا دیا", .9)]
+# surface praise (any strength): over a hazard it is the signature of structural sarcasm
+PRAISE_SEEDS = [("great", .8), ("awesome", .8), ("perfect", .8), ("brilliant", .8), ("amazing", .8), ("good job", .8),
+                ("great job", .9), ("wonderful", .8), ("lovely", .8), ("nice", .6), ("love it", .8), ("thank you", .6),
+                ("thanks", .6), ("enjoy", .6), ("fantastic", .8),
+                ("بہت خوب", .8), ("واہ", .8), ("شکریہ", .6), ("شاباش", .8), ("زبردست", .8), ("بہترین", .8), ("کمال", .7)]
 
-# closed-class function words (structure, not vocabulary of hazards)
+# HIGH-INTENSITY praise: the rule-based sarcasm detector (see rule_based_sarcasm) flags a report when one of these
+# appears in the same text block as a classified civic hazard term. English regexes run on the lower-cased, punctuation-
+# stripped text; Urdu ones on text normalised by normalize_urdu().
+HIGH_INTENSITY_PRAISE = {
+    "en": [r"excellent(?: work| job| service| performance)?", r"great (?:work|job)", r"good (?:work|job)", r"well done",
+           r"(?:amazing|wonderful|fantastic|brilliant|perfect|superb|outstanding) (?:work|job|service)?",
+           r"fantastic", r"brilliant", r"amazing", r"outstanding", r"superb", r"bravo", r"kudos", r"hats off",
+           r"keep it up", r"much appreciated", r"thank(?:s| you) (?:so much|very much|a lot|a ton)",
+           r"love (?:it|this)", r"what a (?:great|wonderful|fantastic|beautiful) (?:road|city|job)"],
+    "ur": [r"بہت شکریہ", r"شکریہ", r"شاباش", r"بہت خوب", r"واہ واہ", r"واہ", r"زبردست", r"بہترین(?: کام)?", r"لاجواب",
+           r"کمال کر دیا", r"کمال ہے", r"عمدہ کام", r"بہت اچھا کام", r"بہت اچھے", r"مبارک ہو", r"خوب کام", r"ماشاءاللہ"],
+}
+
+# closed-class function words (structure, not vocabulary of hazards). English and Urdu script only.
 PRE_NEGATORS = {"no", "not", "never", "without", "neither", "nor", "nothing", "isn't", "isnt", "wasn't", "wasnt",
                 "aren't", "arent", "hasn't", "hasnt", "doesn't", "doesnt", "didn't", "didnt", "cannot", "can't", "cant",
-                "nahi", "nahin", "nhi"}      # (Roman Urdu 'nahi' can also precede: "nahi hai gaddha" - rare, tolerated)
-POST_NEGATORS = {"nahi", "nahin", "nhi", "nai", "nahee", "na", "mat", "نہیں", "نہ"}
-RESOLVE_BLOCKERS = {"yet", "still", "abhi", "tak", "not", "never", "nahi", "nahin", "nhi", "na", "نہیں"}
-BOOSTERS = {"very", "extremely", "huge", "massive", "completely", "totally", "heavily", "badly", "bohat", "bahut", "boht",
-            "bht", "bohot", "bahot", "intehai", "zyada", "bara", "bari", "buri", "بہت", "انتہائی"}
-DIMINISHERS = {"little", "slight", "slightly", "minor", "small", "bit", "thora", "thoda", "zara", "halka", "halki",
-               "تھوڑا", "ہلکا"}
-IRONY_MARKERS = {"haan", "han", "bilkul", "sure", "right", "obviously", "ofcourse", "yeah", "haha", "lol"}
-CONTRAST = r"(?:lekin|magar|but|however|though|although|halanke|par phir bhi)"
+                "بغیر"}
+POST_NEGATORS = {"نہیں", "نہ", "مت", "نہی"}
+RESOLVE_BLOCKERS = {"yet", "still", "not", "never", "نہیں", "ابھی", "تک"}
+BOOSTERS = {"very", "extremely", "huge", "massive", "completely", "totally", "heavily", "badly", "severe", "terribly",
+            "بہت", "انتہائی", "شدید", "بے", "حد", "بڑا", "بڑی", "زیادہ"}
+DIMINISHERS = {"little", "slight", "slightly", "minor", "small", "bit", "تھوڑا", "تھوڑی", "ہلکا", "ہلکی", "معمولی",
+               "ذرا", "چھوٹا", "چھوٹی"}
+IRONY_MARKERS = {"sure", "right", "obviously", "ofcourse", "yeah", "haha", "lol", "ہاں", "بالکل", "ہاہا", "واقعی"}
+CONTRAST = r"(?:but|however|though|although|yet|لیکن|مگر|البتہ|تاہم|حالانکہ)"
 
-ROMAN_URDU_MARKERS = {"hai", "hain", "nahi", "nahin", "ka", "ki", "ke", "ko", "mein", "main", "bohat", "bahut",
-                      "ho", "gaya", "gayi", "raha", "rahi", "pani", "paani", "aur", "yeh", "ye", "woh", "kya",
-                      "abhi", "sab", "koi", "se", "par", "pe", "tak", "bhi", "hi", "jama", "khula", "sadak"}
+# Detection ONLY: used to recognise Roman Urdu and refuse it. Nothing below is ever used to score a report.
+ROMAN_URDU_MARKERS = {"hai", "hain", "nahi", "nahin", "nhi", "ka", "ki", "ke", "ko", "mein", "bohat", "bahut", "gaya",
+                      "gayi", "raha", "rahi", "pani", "paani", "aur", "yeh", "woh", "kya", "abhi", "koi", "bhi", "jama",
+                      "khula", "sadak", "gaddha", "kachra"}
+ROMAN_URDU_MIN_HITS = 2
+ROMAN_URDU_MIN_SHARE = 0.20
 
 # similarity (cosine) -> 0..1 score. EXPERT-SET per backend; see module docstring.
 SIM_BAND = {"hashed-char-ngram": (0.72, 0.95), "onnx-sentence-encoder": (0.40, 0.78)}
@@ -133,38 +180,63 @@ _URL_RE = re.compile(r"https?://\S+|www\.\S+")
 _EMAIL_RE = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _PHONE_RE = re.compile(r"(?<!\d)(?:\+?92|0)?[-\s]?(?:3\d{2}|21)[-\s]?\d{7}(?!\d)")
 _MENTION_RE = re.compile(r"(?<![\w])@\w{2,}")
-_URDU_RE = re.compile(r"[؀-ۿ]")
+_URDU_RE = re.compile("[\u0600-\u06FF\u0750-\u077F\uFB50-\uFDFF\uFE70-\uFEFF]")       # Arabic script block (Urdu)
+_LATIN_RE = re.compile(r"[A-Za-z\u00C0-\u024F]")
+
+# ---------------------------------------------------------------- Urdu-script normalisation
+_URDU_MARKS = re.compile("[\u064B-\u065F\u0670\u06D6-\u06ED\u0640]")        # harakat, dagger alef, Quranic marks, tatweel
+_URDU_MAP = str.maketrans({
+    "\u064A": "\u06CC", "\u0649": "\u06CC", "\u06D2": "\u06D2",                 # Arabic yeh / alef maksura -> Urdu yeh
+    "\u0643": "\u06A9",                                                          # Arabic kaf -> Urdu kaf
+    "\u06C3": "\u06C1", "\u06D5": "\u06C1", "\u0629": "\u06C1", "\u0647": "\u06C1",              # teh marbuta / ae -> heh goal
+    "\u0623": "\u0627", "\u0625": "\u0627", "\u0671": "\u0627",              # hamza-alef variants -> alef
+    "\u200c": " ", "\u200d": "", "\u200e": "", "\u200f": "",                  # ZWNJ splits words ("مین\u200cہول")
+    "\u0660": "0", "\u0661": "1", "\u0662": "2", "\u0663": "3", "\u0664": "4",
+    "\u0665": "5", "\u0666": "6", "\u0667": "7", "\u0668": "8", "\u0669": "9",
+    "\u06F0": "0", "\u06F1": "1", "\u06F2": "2", "\u06F3": "3", "\u06F4": "4",
+    "\u06F5": "5", "\u06F6": "6", "\u06F7": "7", "\u06F8": "8", "\u06F9": "9",
+})
+_URDU_PUNCT = "\u060C\u061B\u061F\u06D4\u066A\u066B\u066C\u066D"                # ، ؛ ؟ ۔ and Arabic percent/decimal marks
+
+
+def normalize_urdu(text: str) -> str:
+    """Canonical form of Urdu-script text so that visually identical spellings compare equal: NFKC, diacritics and
+    tatweel removed, Arabic yeh/kaf/heh/alef variants folded to the Urdu letters, zero-width joiners removed (ZWNJ
+    becomes a space), Arabic-Indic and Persian digits turned into ASCII. Latin text passes through unchanged."""
+    if not text:
+        return ""
+    return _URDU_MARKS.sub("", unicodedata.normalize("NFKC", text)).translate(_URDU_MAP)
 
 
 # ---------------------------------------------------------------- normalisation
 def _norm(text: str) -> str:
-    t = _URL_RE.sub(" ", (text or "").lower())
-    return re.sub(r"\s+", " ", re.sub(r"[^\w\s؀-ۿ']", " ", t)).strip()
+    t = normalize_urdu(_URL_RE.sub(" ", (text or "").lower()))
+    t = re.sub(r"[" + _URDU_PUNCT + r"]", " ", t)
+    return re.sub(r"\s+", " ", re.sub(r"[^\w\s']", " ", t)).strip()
 
 
-_VOWEL_DIGRAPHS = (("aa", "a"), ("ee", "i"), ("ii", "i"), ("oo", "u"), ("ph", "f"), ("ay", "e"), ("ey", "e"))
+_VOWEL_DIGRAPHS = (("ee", "i"), ("ii", "i"), ("oo", "u"), ("ph", "f"))
 
 
 def roman_normalize(token: str) -> str:
-    """Collapses the common spelling variation of Roman Urdu and English inflection so that 'khadda' / 'khada' /
-    'khadaa', 'gaddhay' / 'gaddhe', 'paani' / 'pani', 'theek' / 'thik', 'potholes' / 'pothole', 'flooded' /
-    'flooding' map to (nearly) one form. Deliberately crude and applied identically to seeds and to incoming text;
-    non-Latin (Urdu script) tokens are returned unchanged."""
+    """Spelling/inflection folding for ENGLISH tokens ('potholes' / 'pothole', 'flooded' / 'flooding' / 'flood',
+    'colour' typos with doubled letters). Applied identically to seeds and to incoming text. Urdu-script tokens (non-ASCII)
+    are returned unchanged. (The name is historical; it no longer does anything for Roman Urdu, which is unsupported.)"""
     if not token or not token.isascii():
         return token
     t = token
     for a, b in _VOWEL_DIGRAPHS:
         t = t.replace(a, b)
-    t = t.replace("w", "v")
     t = re.sub(r"([a-z])\1+", r"\1", t)
     if len(t) > 4:
         for suffix, keep in (("ing", 3), ("ed", 3), ("s", 4)):
             if t.endswith(suffix) and len(t) - len(suffix) >= keep:
                 t = t[:-len(suffix)]
                 break
-    if len(t) >= 5 and t[-1] in "aei":            # Roman-Urdu gender/number endings: kachra / kachre / kachri
-        t = t[:-1] + "a"
     return t
+
+
+normalize_token = roman_normalize
 
 
 # ---------------------------------------------------------------- embedders
@@ -357,8 +429,8 @@ class SeedBank:
                 if not items:
                     hit = (np.zeros((0, embedder.dim or 1), np.float32), np.zeros(0), [])
                 else:
-                    hit = (embedder.encode([p for p, _ in items]), np.array([w for _, w in items], dtype=np.float64),
-                           [p for p, _ in items])
+                    hit = (embedder.encode([_norm(p) for p, _ in items]),
+                           np.array([w for _, w in items], dtype=np.float64), [p for p, _ in items])
                 self._cache[key] = hit
             return hit
 
@@ -372,6 +444,60 @@ if os.path.exists(_extra):
     except Exception as _exc:                                  # a broken user file must never break the import
         log.warning("could not load extra seeds from %s: %s", _extra, _exc)
 HAZARD_CONCEPTS = tuple(HAZARD_SEEDS)
+
+
+# ---------------------------------------------------------------- deterministic lexicon layer
+# Exact (normalised) phrase lookup over the alignment dictionary. It runs next to the embedding similarity, so a known
+# civic term in either language is ALWAYS recognised, whichever embedder is installed. Keys are token tuples after
+# _norm() + roman_normalize(), so 'Potholes', 'potholes' and Urdu spellings with diacritics or ZWNJ all collapse.
+def _lex_key(phrase):
+    return tuple(roman_normalize(w) for w in _norm(phrase).split())
+
+
+LEXICON: dict = {}
+for _concept, _items in HAZARD_SEEDS.items():
+    _d = LEXICON.setdefault(_concept, {})
+    for _phrase, _w in _items:
+        _k = _lex_key(_phrase)
+        if _k and (_k not in _d or _d[_k][0] < _w):
+            _d[_k] = (_w, _phrase)
+MAX_LEX_WORDS = max(len(_k) for _d in LEXICON.values() for _k in _d)
+
+_PRAISE_RES = [re.compile(r"(?<!\w)(?:" + "|".join(normalize_urdu(p) for p in pats) + r")(?!\w)")
+               for pats in HIGH_INTENSITY_PRAISE.values()]
+
+
+def detect_high_intensity_praise(text: str) -> list:
+    """High-intensity praise phrases ('excellent work', 'great job', 'بہت شکریہ', 'شاباش', ...) found in `text`,
+    longest first, with matches that are part of a longer match removed."""
+    norm = _norm(text)
+    found = []
+    for rx in _PRAISE_RES:
+        found.extend(m.group(0).strip() for m in rx.finditer(norm) if m.group(0).strip())
+    found = sorted(set(found), key=len, reverse=True)
+    kept = []
+    for f in found:
+        if not any(f in k for k in kept):
+            kept.append(f)
+    return kept
+
+
+def lexicon_hits(text: str) -> dict:
+    """{concept: [phrase, ...]} for every alignment-dictionary term found in `text` (ignores negation; for inspection
+    and tests - the scorer uses the same matching through _Spans)."""
+    out = {}
+    for seg in _segments(text):
+        for toks in seg:
+            normed = [roman_normalize(w) for w in toks]
+            for concept, table in LEXICON.items():
+                for size in range(1, MAX_LEX_WORDS + 1):
+                    for st in range(0, len(normed) - size + 1):
+                        hit = table.get(tuple(normed[st:st + size]))
+                        if hit:
+                            out.setdefault(concept, [])
+                            if hit[1] not in out[concept]:
+                                out[concept].append(hit[1])
+    return out
 
 
 # ---------------------------------------------------------------- privacy
@@ -404,8 +530,9 @@ def author_hash(platform: str, handle) -> str | None:
 
 # words that carry no meaning on their own; a "resolved" claim must rest on a CONTENT word ("theek", "fixed"), never on
 # the shared filler of "hal ho gaya" / "pani jama ho gaya" (which would mark a live flood as already fixed)
-_FILLER = {"ho", "gaya", "gayi", "gaye", "hai", "hain", "hua", "hui", "hue", "ka", "ki", "ke", "ko", "to", "bhi", "ab", "ne",
-           "has", "have", "been", "now", "is", "was", "are", "a", "the", "it", "its", "has", "kar", "diya", "di", "liya"}
+_FILLER = {"ہو", "گیا", "گئی", "گئے", "ہے", "ہیں", "تھا", "تھی", "تھے", "ہوا", "ہوئی", "ہوئے", "کا", "کی", "کے", "کو", "بھی",
+           "اب", "نے", "کر", "دیا", "دی", "لیا", "سے", "پر", "میں",
+           "has", "have", "been", "now", "is", "was", "are", "a", "the", "it", "its", "to", "of", "in", "on"}
 
 
 def _content_tokens(tokens):
@@ -440,22 +567,36 @@ def _noisy_or(ws):
     return 1.0 - p
 
 
+SUPPORTED_LANGUAGES = ("en", "ur", "mixed")           # English, Urdu script, or both in one post
+UNSUPPORTED_LANGUAGES = ("roman-ur", "other")
+
+
 def detect_language(text: str) -> str:
-    letters = [c for c in text if c.isalpha()]
+    """'en' (Latin script, English), 'ur' (Urdu/Arabic script), 'mixed' (both scripts), 'roman-ur' (Urdu written in
+    Latin letters: recognised in order to be REFUSED), or 'other' (letters of some other script, e.g. Cyrillic, Devanagari,
+    CJK). Roman Urdu is spotted by function-word markers: at least ROMAN_URDU_MIN_HITS distinct markers AND at least
+    ROMAN_URDU_MIN_SHARE of the words, so an English sentence naming 'Gulshan ka road' is not rejected."""
+    letters = [c for c in (text or "") if c.isalpha()]
     if not letters:
         return "en"
-    urdu_ratio = sum(1 for c in letters if _URDU_RE.match(c)) / len(letters)
-    toks = set(_norm(text).split())
-    roman_hits = len(toks & ROMAN_URDU_MARKERS)
-    if urdu_ratio > 0.6:
+    n = len(letters)
+    urdu = sum(1 for c in letters if _URDU_RE.match(c))
+    latin = sum(1 for c in letters if _LATIN_RE.match(c))
+    if (n - urdu - latin) / n > 0.5:
+        return "other"
+    if urdu / n > 0.6:
         return "ur"
-    if urdu_ratio > 0.15:
+    if urdu / n > 0.15:
         return "mixed"
-    return "roman-ur" if roman_hits >= 2 else "en"
+    words = _norm(text).split()
+    hits = {w for w in words if w in ROMAN_URDU_MARKERS}
+    if len(hits) >= ROMAN_URDU_MIN_HITS and sum(w in ROMAN_URDU_MARKERS for w in words) / max(len(words), 1) >= ROMAN_URDU_MIN_SHARE:
+        return "roman-ur"
+    return "en"
 
 
 # ---------------------------------------------------------------- structure: segments, spans, negation, intensity
-_CONNECTORS = {"aur", "and", "or", "ya", "jabke", "kyunke", "because", "while"}
+_CONNECTORS = {"and", "or", "because", "while", "اور", "یا", "کیونکہ", "جبکہ"}
 
 
 def _segments(text):
@@ -463,10 +604,10 @@ def _segments(text):
     Segments end at . ! ? ; or a contrast word ('lekin', 'but', ...): praise in one segment must not colour a hazard in
     a contrasting one ("road is nice BUT potholes everywhere"). Clauses end at commas and bound negation windows
     ("pani jama hai, koi nahi sunta": the 'nahi' belongs to the second clause, not to the water)."""
-    low = _URL_RE.sub(" ", (text or "").lower())
+    low = normalize_urdu(_URL_RE.sub(" ", (text or "").lower()))
     out = []
-    for part in re.split(rf"[.!?;\n]+|\b{CONTRAST}\b", low):
-        clauses = [c for c in (_norm(x).split() for x in part.split(",")) if c]
+    for part in re.split(rf"[.!?;\n\u06D4\u061F\u061B]+|(?<!\w){CONTRAST}(?!\w)", low):
+        clauses = [c for c in (_norm(x).split() for x in re.split(r"[,\u060C]", part)) if c]
         if clauses:
             out.append(clauses)
     return out
@@ -536,6 +677,7 @@ class _Spans:
         self.spans = _spans(self.segs, embedder.name)
         self.embedder = embedder
         self.raw = text or ""
+        self.normed = [[[roman_normalize(w) for w in cl] for cl in seg] for seg in self.segs]
         self.E = (embedder.encode([" ".join(self.segs[si][ci][a:b]) for si, ci, a, b in self.spans])
                   if self.spans else np.zeros((0, embedder.dim or 1), np.float32))
         self._cache = {}
@@ -563,6 +705,20 @@ class _Spans:
                 inner_ok = any(t in _ALL_NEGATORS for t in phrase.split())
                 out.append({"seg": si, "cl": ci, "a": a, "b": b, "s": float(s[i]), "cos": float(cos[i]), "phrase": phrase,
                             "negated": is_negated(self.segs[si][ci], a, b, resolve=resolve, allow_inner=inner_ok)})
+        table = LEXICON.get(concept)
+        if table:
+            for si, seg in enumerate(self.normed):
+                for ci, normed in enumerate(seg):
+                    for size in range(1, MAX_LEX_WORDS + 1):
+                        for st in range(0, len(normed) - size + 1):
+                            hit = table.get(tuple(normed[st:st + size]))
+                            if hit is None:
+                                continue
+                            weight, phrase = hit
+                            inner_ok = any(w in _ALL_NEGATORS for w in _norm(phrase).split())
+                            out.append({"seg": si, "cl": ci, "a": st, "b": st + size, "s": float(weight), "cos": 1.0,
+                                        "phrase": phrase, "source": "lexicon",
+                                        "negated": is_negated(self.segs[si][ci], st, st + size, allow_inner=inner_ok)})
         out.sort(key=lambda d: -d["s"])
         self._cache[concept] = out
         return out
@@ -612,8 +768,10 @@ def _analyze_with(embedder, text, n_images, bank):
     resolved_live = [c for c in sp.scored("_resolved", bank) if not c["negated"] and c["s"] >= 0.5]
     resolved_segs = {c["seg"] for c in resolved_live}
 
+    praise_terms = detect_high_intensity_praise(text or "")
     base = {"urgency": round(urgency, 3), "negativity": round(negativity, 3), "lang": lang, "backend": embedder.name,
-            "negated": False, "sarcasm": False, "needs_review": False}
+            "negated": False, "sarcasm": False, "needs_review": False, "supported": True, "flags": [],
+            "praise_terms": praise_terms}
     if not strong:
         ambiguous = [d for d in denied.values() if (d["seg"] in praise_segs or irony or irony_words)]
         if ambiguous:          # "koi gaddha nahi, wah!" - sincere praise OR irony; do not trust either reading
@@ -638,7 +796,11 @@ def _analyze_with(embedder, text, n_images, bank):
     # (a) praise in the same sentence, or (b) praise in the next/previous sentence when the writer signals irony with
     # '!!' / '?!' ("Another pothole. Love it!!")
     near_praise = praise_segs | ({s + 1 for s in praise_segs} | {s - 1 for s in praise_segs} if irony else set())
-    sarcasm = any(c["seg"] in near_praise and c["seg"] not in resolved_segs for c in live)
+    structural_sarcasm = any(c["seg"] in near_praise and c["seg"] not in resolved_segs for c in live)
+    # rule: high-intensity praise anywhere in the same text block as a classified, un-negated hazard term, unless the
+    # praise is thanks for a fix ("great job fixing the pothole" - a resolved claim is present)
+    rule_sarcasm = bool(praise_terms) and not resolved_live
+    sarcasm = structural_sarcasm or rule_sarcasm
     if sarcasm:
         urgency *= SARCASM_URGENCY_DAMPING          # jokes about danger must not inflate the urgency score
         negativity = max(negativity, SARCASM_NEGATIVITY_FLOOR)
@@ -649,6 +811,8 @@ def _analyze_with(embedder, text, n_images, bank):
     return {**base, "hazard_type": hazard, "hazard_strength": round(strength, 3), "urgency": round(urgency, 3),
             "negativity": round(negativity, 3), "community_signal": round(signal, 3),
             "status": "resolved" if resolved else "active", "keywords": keywords, "sarcasm": sarcasm,
+            "sarcasm_rule": ("praise+hazard" if rule_sarcasm else "structural") if sarcasm else None,
+            "flags": ["sarcasm"] if sarcasm else [], "needs_review": bool(rule_sarcasm),
             "similarity": round(best["cos"], 3)}
 
 
@@ -658,6 +822,13 @@ def analyze_text(text: str, n_images: int = 0, *, embedder=None, bank=None) -> d
     text = text if isinstance(text, str) else ("" if text is None else str(text))
     bank = bank or BANK
     emb = embedder or get_embedder()
+    lang = detect_language(text)
+    if lang in UNSUPPORTED_LANGUAGES:
+        log.info("unsupported language %r: report not analysed (supported: standard English and Urdu script)", lang)
+        return {"hazard_type": None, "hazard_strength": 0.0, "urgency": 0.0, "negativity": 0.0, "community_signal": 0.0,
+                "status": "irrelevant", "keywords": [f"~unsupported:{lang}"], "lang": lang, "backend": emb.name,
+                "negated": False, "sarcasm": False, "sarcasm_rule": None, "needs_review": False, "supported": False,
+                "flags": ["unsupported_language"], "praise_terms": []}
     try:
         return _analyze_with(emb, text, n_images, bank)
     except Exception as exc:

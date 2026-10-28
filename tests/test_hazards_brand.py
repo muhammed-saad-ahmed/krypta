@@ -40,48 +40,48 @@ def test_only_area_scale_hazards_are_satellite_observable():
 
 
 # ---------------------------------------------------------------- hazard text regressions (bugs found in review)
-@pytest.mark.parametrize("text", ["nala overflow ho gaya", "pani jama ho gaya hai", "pothole ho gaya",
-                                  "sadak toot gayi ho gaya", "gutter ubal gaya"])
+@pytest.mark.parametrize("text", ["نالہ ابل گیا", "پانی جمع ہو گیا ہے", "pothole has been reported",
+                                  "سڑک ٹوٹ گئی ہے", "گٹر ابل گیا"])
 def test_filler_words_never_mark_a_live_hazard_as_resolved(text):
     r = _a(text)
     assert r["hazard_type"] is not None and r["status"] == "active", (text, r)
 
 
-@pytest.mark.parametrize("text", ["gaddha theek ho gaya", "pothole fixed yesterday thanks", "kaam mukammal ho gaya pothole ka",
+@pytest.mark.parametrize("text", ["گڑھا ٹھیک ہو گیا", "pothole fixed yesterday thanks", "گڑھے کا کام مکمل ہو گیا",
                                   "there was a pothole but it is repaired now"])
 def test_genuine_fix_reports_are_still_resolved(text):
     assert _a(text)["status"] == "resolved"
 
 
 def test_resolved_claim_blocked_by_still_or_not_yet():
-    r = _a("gutter ubal raha hai abhi tak theek nahi hua")
+    r = _a("گٹر ابل رہا ہے ابھی تک ٹھیک نہیں ہوا")
     assert r["hazard_type"] == "sewage_overflow" and r["status"] == "active"
 
 
-@pytest.mark.parametrize("text", ["gutter ka dhakkan khula hai bohat khatarnak", "khula gutter bacchon ke liye khatarnak",
-                                  "manhole cover stolen", "Open manhole near Nazimabad, bacha gir gaya"])
+@pytest.mark.parametrize("text", ["کھلا گٹر بچوں کے لیے بہت خطرناک ہے", "کھلا مین ہول بچوں کے لیے خطرناک ہے",
+                                  "manhole cover stolen", "Open manhole near Nazimabad, a child fell in"])
 def test_open_manhole_variants(text):
     assert _a(text)["hazard_type"] == "open_manhole"
 
 
 @pytest.mark.parametrize("text,expect", [("stagnant water breeding mosquitoes", "waterlogging"),
-                                         ("pani bhar gaya underpass mein", "waterlogging"),
+                                         ("انڈر پاس میں پانی بھر گیا", "waterlogging"),
                                          ("sewage water overflowing on main road", "sewage_overflow"),
-                                         ("kachre ka dher lag gaya hai", "garbage"),
+                                         ("کچرے کا ڈھیر لگ گیا ہے", "garbage"),
                                          ("road collapsed near flyover", "road_damage")])
 def test_more_hazard_phrases(text, expect):
     assert _a(text)["hazard_type"] == expect
 
 
 @pytest.mark.parametrize("text", ["traffic jam on shahrah e faisal", "i love karachi weather", "no flooding today alhamdulillah",
-                                  "pani nikal gaya, road clear"])
+                                  "the water has drained and the road is clear"])
 def test_non_hazard_posts_do_not_create_hazards(text):
     r = _a(text)
     assert r["hazard_type"] is None and r["hazard_strength"] == 0.0
 
 
 def test_child_danger_raises_urgency():
-    assert _a("open manhole, bacha gir gaya")["urgency"] > _a("open manhole")["urgency"]
+    assert _a("open manhole, a child fell in")["urgency"] > _a("open manhole")["urgency"]
 
 
 # ---------------------------------------------------------------- brand
