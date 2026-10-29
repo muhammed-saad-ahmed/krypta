@@ -19,7 +19,8 @@ from app_ui.theme import inject_global_css, risk_color, TEXT, TEXT_MUTED, TEXT_F
 from app_ui.components import (metric_tile, confidence_bar, section_header, hero, radial_gauge,
                                 pipeline_diagram, empty_state, error_state, footer, privacy_badge,
                                 incident_dossier, nav_group, go_to, draw_detections, grouped_detections,
-                                detection_group_row, class_color_hex, logo_html, karachi_map)
+                                detection_group_row, class_color_hex, logo_html, karachi_map, engine_status_html,
+                                synthetic_banner)
 
 st.set_page_config("KRYPTA — Karachi Risk & YOLO-driven Platform for Terrain Analysis", layout="wide", initial_sidebar_state="auto")
 inject_global_css()
@@ -110,8 +111,7 @@ with st.sidebar:
     det_ok = det.available()
     st.markdown(
         f'<div class="kp-status"><div class="kp-status-title">SYSTEM STATUS</div>'
-        f'<div class="kp-status-row"><span class="kp-dot" style="background:{"#3AA76D" if det_ok else TEXT_FAINT}"></span>'
-        f'Vision model: {det.name}{" (baseline)" if det.name == "yolo-baseline" else ""}</div>'
+        f'{engine_status_html(dt.is_custom(det), det.name, det_ok)}'
         f'<div class="kp-status-row"><span class="kp-dot" style="background:{TEXT_FAINT}"></span>Data mode: synthetic demo</div>'
         f'<div class="kp-status-row"><span class="kp-dot" style="background:#3AA76D"></span>'
         f'Processing v{config.PROCESSING_VERSION}</div></div>', unsafe_allow_html=True)
@@ -131,7 +131,7 @@ if page == "Command Center":
     hero()
 
     df = scored(demo())
-    st.warning(SYN_NOTICE)
+    synthetic_banner()
     c1, c2, c3, c4 = st.columns(4)
     with c1: metric_tile("Observations", f"{int(df.n_observations.sum()):,}")
     with c2: metric_tile("Active incidents", f"{len(df):,}")
@@ -339,7 +339,7 @@ elif page == "AI Analysis Lab":
 # ================================================================ INTELLIGENCE MAP
 elif page == "Intelligence Map":
     section_header("CITY INTELLIGENCE", "Karachi Intelligence Map")
-    st.warning(SYN_NOTICE)
+    synthetic_banner()
     df = scored(demo())
 
     f1, f2, f3 = st.columns([2, 2, 1])
@@ -372,7 +372,7 @@ elif page == "Intelligence Map":
 # ================================================================ INCIDENTS
 elif page == "Incidents":
     section_header("INCIDENT INTELLIGENCE", "Incidents")
-    st.warning(SYN_NOTICE)
+    synthetic_banner()
     df = scored(demo()).sort_values("risk", ascending=False).reset_index(drop=True)
 
     cL, cR = st.columns([1, 1.2])
@@ -414,7 +414,7 @@ elif page == "Road Health":
 # ================================================================ FLOOD LAB
 elif page == "Flood Lab":
     section_header("MODEL ESTIMATE — NOT A FLOOD FORECAST", "Flood & Waterlogging Lab")
-    st.warning(SYN_NOTICE + " Rainfall response uses configured sensitivity weights, unvalidated against real flood data.")
+    synthetic_banner("Rainfall response uses configured sensitivity weights, unvalidated against real flood data.")
     rain = st.select_slider("Rainfall scenario (mm)", options=[10, 25, 50, 75, 100], value=25)
     d = demo(); d = d[d.type == "waterlogging"].reset_index(drop=True)
     cur = scored(d, rain)
@@ -552,7 +552,7 @@ elif page == "Traffic Lab":
 # ================================================================ MODEL LAB
 elif page == "Analytics":
     section_header("ANALYTICS", "Analytics", "Distribution and trend analysis over the demo dataset, plus any real observations you've logged.")
-    st.warning(SYN_NOTICE + " Real observations from AI Analysis Lab (if any) are charted separately and labelled.")
+    synthetic_banner("Real observations from AI Analysis Lab (if any) are charted separately and labelled.")
     df = scored(demo())
 
     c1, c2 = st.columns(2)
@@ -609,7 +609,7 @@ elif page == "Data Explorer":
     section_header("DATA EXPLORER", "Data Explorer", "Browse the underlying records behind every other page.")
 
     st.markdown('<div class="kp-eyebrow">SYNTHETIC DEMO DATASET</div>', unsafe_allow_html=True)
-    st.warning(SYN_NOTICE)
+    synthetic_banner()
     df = scored(demo())
     c1, c2, c3 = st.columns(3)
     f_type = c1.multiselect("Type", sorted(df["type"].unique()), sorted(df["type"].unique()), key="de_type")
@@ -673,14 +673,14 @@ elif page == "Model Lab":
 
     names = dt.class_names(det)
     with st.expander(f"Classes this model can recognize ({len(names)})" if names else "Classes this model can recognize"):
-        st.write(", ".join(names) if names else "No model is loaded, so there is no class list to show.")
+        st.write(", ".join(names) if names else "No detector is active in this session, so there is no class list to show.")
 
     st.markdown('<div class="kp-eyebrow" style="margin-top:0.6rem">INFERENCE BENCHMARK — MEASURED ON YOUR MACHINE</div>', unsafe_allow_html=True)
     st.caption("Runs real inference on a synthetic random-noise image to time raw speed only — this is not an "
                "accuracy measurement, and results vary by machine (CPU/GPU).")
     if st.button("Run inference benchmark"):
         if not det.available():
-            st.warning("No model is loaded — install `ultralytics` or add a custom model to benchmark.")
+            st.info("Benchmarking runs once a detector is available: install `ultralytics` for the COCO baseline or add trained weights to `models/custom/`.")
         else:
             with st.spinner(f"Running {config.BENCHMARK_RUNS} inference passes..."):
                 bench = dt.benchmark(det)

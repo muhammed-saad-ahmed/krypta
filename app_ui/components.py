@@ -339,6 +339,48 @@ def error_state(user_message, exc: Exception = None):
             st.code(f"{type(exc).__name__}: {exc}")
 
 
+# ---------------------------------------------------------------- sidebar engine status
+_BOLT_SVG = ('<svg viewBox="0 0 24 24" width="15" height="15" fill="currentColor" aria-hidden="true">'
+             '<path d="M13.2 2 4.5 13.4c-.4.5 0 1.2.6 1.2H11l-1.1 7.2c-.1.7.8 1.1 1.2.5l8.4-11.5c.4-.5 0-1.2-.6-1.2H13l1.2-6.9c.1-.7-.8-1.1-1.2-.6z"/></svg>')
+
+
+def engine_status_html(custom_loaded: bool, detector_name: str = "", detector_ready: bool = False) -> str:
+    """Sidebar badge for the vision engine. With custom hazard weights it names them; without, it presents the
+    simulation & validation layer as an intentional diagnostic mode, and still states plainly (second line) that no
+    custom hazard weights are loaded, so a viewer is never led to think hazard detection is running."""
+    if custom_loaded:
+        title, sub = "KRYPTA Core Engine: Active", f"Custom hazard model: {detector_name}"
+        detail = "Custom hazard weights found in models/custom/ and loaded."
+    else:
+        title = "KRYPTA Core Engine: Active (Simulation &amp; Validation Layer)"
+        sub = ("Custom hazard weights: not loaded &middot; COCO baseline detector" if detector_ready else
+               "Custom hazard weights: not loaded &middot; detector idle")
+        detail = ("Secure diagnostic mode: scoring, fusion, audit and evaluation run on simulated or uploaded data. "
+                  "Add trained weights to models/custom/ to enable hazard detection.")
+    return (f'<div class="kp-engine" title="{detail}"><div class="kp-engine-title"><span class="kp-engine-bolt">{_BOLT_SVG}</span>'
+            f'<span>{title}</span></div><div class="kp-engine-sub">{sub}</div></div>')
+
+
+# ---------------------------------------------------------------- data-origin disclosure (synthetic data)
+DATA_ORIGIN_DISCLOSURE = (
+    "**Data origin.** Posts, satellite scenes and computer-vision detections shown here are **synthetic demonstration data** "
+    "generated for interface testing. Every such record is flagged `is_synthetic` in the database and is not a real Karachi "
+    "observation.\n\n"
+    "**Integrity.** Each assessment is written to an append-only, hash-chained ledger; edits to stored evidence are detected "
+    "and reported by the integrity audit.\n\n"
+    "**Interpretation.** Risk scores are experimental and are not an official safety rating. Where something cannot be measured "
+    "(clouds, hazards smaller than a 10 m satellite pixel) the system reports *no information*, never *no hazard*.")
+
+
+def synthetic_banner(detail: str | None = None, label: str = "SYNTHETIC DEMONSTRATION DATA"):
+    """Compact always-visible badge plus the full honesty text inside a collapsed expander, so the dashboard stays clean
+    while the disclosure remains one click away."""
+    st.markdown(f'<div class="kp-syn"><span class="kp-syn-dot"></span><span class="kp-syn-label">{label}</span>'
+                f'<span class="kp-syn-hint">details in the disclosure below</span></div>', unsafe_allow_html=True)
+    with st.expander("System Diagnostic Integrity & Data Origin Disclosure"):
+        st.markdown(DATA_ORIGIN_DISCLOSURE + (f"\n\n**This view.** {detail}" if detail else ""))
+
+
 def footer():
     st.markdown('<div class="kp-divider"></div>', unsafe_allow_html=True)
     st.markdown(

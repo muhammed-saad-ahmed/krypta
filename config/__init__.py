@@ -38,7 +38,7 @@ _load_dotenv()
 DB_PATH = os.getenv("KP_DB_PATH", "data/krypta.db")
 if "KP_DB_PATH" not in os.environ and not os.path.exists(DB_PATH) and os.path.exists("data/karachi_pulse.db"):
     DB_PATH = "data/karachi_pulse.db"          # keep using a database created before the rename
-PROCESSING_VERSION = "2.2.0"
+PROCESSING_VERSION = "2.3.0"
 KARACHI_BBOX = (24.70, 66.80, 25.60, 67.60)  # lat_min, lon_min, lat_max, lon_max
 # Strict administrative limits for INCOMING reports and data points: lat 24.75..25.15, lon 66.85..67.35 (same order).
 # Anything outside is rejected, not clamped. KARACHI_BBOX above stays the wider area used for satellite look-ups.
@@ -94,7 +94,7 @@ EDGE_INT8_MIN_TOPK_JACCARD = 0.60
 EDGE_INT8_REQUIRE_SPEEDUP = False         # many laptop CPUs lack the INT8 instructions; slower-than-FP32 is a warning, not a failure
 
 # ============================================================== 3. OSINT scraping pipeline
-OSINT_USER_AGENT = ("KryptaResearchBot/2.2 (+https://github.com/muhammed-saad-ahmed/"
+OSINT_USER_AGENT = ("KryptaResearchBot/2.3 (+https://github.com/muhammed-saad-ahmed/"
                     "krypta; independent research prototype)")
 OSINT_MIN_DELAY_S = 2.0                   # minimum gap between two requests to the SAME host
 OSINT_MAX_CONCURRENCY = 4                 # global cap on in-flight requests

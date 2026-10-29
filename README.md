@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <img alt="Version" src="https://img.shields.io/badge/version-2.2.0-3DD6F5?style=flat-square&labelColor=0C111A">
+  <img alt="Version" src="https://img.shields.io/badge/version-2.3.0-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="Python" src="https://img.shields.io/badge/built%20with-Python%20%2B%20Streamlit-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="License" src="https://img.shields.io/badge/license-MIT-3DD6F5?style=flat-square&labelColor=0C111A">
   <img alt="Cost" src="https://img.shields.io/badge/cost-%240%20free%20tools-3DD6F5?style=flat-square&labelColor=0C111A">
@@ -27,7 +27,7 @@
 > *Not an official municipal system, safety rating, government service, or production-ready hazard detection system.*
 
 **Author:** Muhammad Saad Ahmed ([LinkedIn](https://www.linkedin.com/in/muhammed-saad-ahmed) · [GitHub](https://github.com/muhammed-saad-ahmed))  
-**Version:** 2.2.0 (multi-modal edition, production modules)
+**Version:** 2.3.0 (multi-modal edition, demo-ready)
 **License:** MIT
 
 ---
@@ -271,6 +271,7 @@ krypta/
     ├── test_int8_pipeline.py     augmentation, calibration set, tensor agreement, latency, INT8 gates
     ├── test_hazards_brand.py     hazard config/text regressions (false 'resolved', open-gutter), brand checks
     ├── test_v4_modules.py        v2.2: mAP evaluator, Karachi bbox filter, English+Urdu text and sarcasm rule, ledger rollback
+    ├── test_v5_demo_polish.py    v2.3: live->synthetic satellite failover, engine badge and disclosure wiring
     └── tiny_onnx.py              Builds a stub ONNX model (no `onnx` package needed) for runtime tests
 ```
 

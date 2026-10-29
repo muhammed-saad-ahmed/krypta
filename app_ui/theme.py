@@ -34,7 +34,7 @@ ACCENT_DIM = "#1B8AA3"
 RISK_COLORS = {"Low": "#3AA76D", "Moderate": "#E8C547", "High": "#E8842C", "Critical": "#E14B4B",
                "Medium": "#E8842C"}
 
-VERSION = "2.2.0"
+VERSION = "2.3.0"
 
 
 def risk_color(level: str) -> str:
@@ -230,6 +230,25 @@ def inject_global_css():
         .kp-metric-value-sm {{ font-size: 1.12rem !important; line-height: 1.3 !important; word-break: break-word;
                                overflow-wrap: anywhere; }}
         .kp-metric-delta {{ overflow-wrap: anywhere; }}
+
+        /* ---- engine status badge (sidebar) ---- */
+        .kp-engine {{ margin: 1.1rem 0 0.7rem 0; padding: 0.7rem 0.8rem; border-radius: 12px; border: 1px solid {ACCENT_DIM};
+                      background: linear-gradient(135deg, rgba(61,214,245,0.12), rgba(61,214,245,0.03)); }}
+        .kp-engine-title {{ display: flex; align-items: flex-start; gap: 0.5rem; color: #E6FAFF; font-weight: 600;
+                            font-size: 0.8rem; line-height: 1.35; }}
+        .kp-engine-bolt {{ flex: 0 0 auto; color: {ACCENT}; margin-top: 1px; filter: drop-shadow(0 0 6px rgba(61,214,245,0.6)); }}
+        .kp-engine-sub {{ margin: 0.4rem 0 0 1.45rem; font-family: 'JetBrains Mono', monospace; font-size: 0.62rem;
+                          letter-spacing: 0.04em; color: {TEXT_FAINT}; line-height: 1.45; }}
+
+        /* ---- synthetic-data badge (compact, always visible) ---- */
+        .kp-syn {{ display: inline-flex; align-items: center; gap: 0.55rem; padding: 0.38rem 0.85rem; border-radius: 999px;
+                   border: 1px solid rgba(214,177,92,0.45); background: rgba(214,177,92,0.08); margin: 0 0 0.4rem 0; }}
+        .kp-syn-dot {{ width: 7px; height: 7px; border-radius: 50%; background: #D6B15C; box-shadow: 0 0 8px rgba(214,177,92,0.7); }}
+        .kp-syn-label {{ font-family: 'JetBrains Mono', monospace; font-size: 0.68rem; letter-spacing: 0.14em; color: #E9CF8E; }}
+        .kp-syn-hint {{ font-size: 0.7rem; color: {TEXT_FAINT}; }}
+        [data-testid="stExpander"] {{ border: 1px solid {BORDER} !important; border-radius: 12px !important;
+                                      background: {SURFACE_1} !important; margin-bottom: 1rem; }}
+        [data-testid="stExpander"] summary {{ font-size: 0.82rem; color: {TEXT_MUTED}; }}
 
         /* ---- ledger tamper alert (red, pulsing) ---- */
         @keyframes kp-pulse {{ 0% {{ box-shadow: 0 0 0 0 rgba(229,72,77,0.55); }} 70% {{ box-shadow: 0 0 0 14px rgba(229,72,77,0); }}

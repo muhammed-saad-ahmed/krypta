@@ -49,6 +49,8 @@ import hashlib
 import importlib.util
 import logging
 import math
+import threading
+import time
 import warnings
 
 import numpy as np
@@ -502,6 +504,9 @@ class SatelliteEvidence:
     cached: bool = False
     result_sha256: str = ""
     preview: dict | None = dataclasses.field(default=None, repr=False, compare=False)
+    # set only when a live check failed and the offline synthetic layer answered instead (not stored, not hashed)
+    fallback_reason: str | None = dataclasses.field(default=None, compare=False)
+    fallback_from: str | None = dataclasses.field(default=None, compare=False)
 
     @property
     def conclusive(self):
@@ -954,3 +959,73 @@ class SatelliteVerifier:
             notes.append("A 10 m pixel cannot resolve narrow street-level flooding; 'no change' means no "
                          "hectare-scale new water, not that the street is dry.")
         return SatelliteEvidence(verdict=verdict, support=support, notes=notes, **common, **base_kw)
+
+
+FALLBACK_NOTICE = ("Live satellite provider unavailable ({reason}). Switched automatically to the offline Synthetic Mirror "
+                   "Layer: the scenes shown are simulated and are flagged synthetic, not real observations.")
+
+
+def failure_reason(error) -> str:
+    """Short, human-readable cause for a provider error string ('ConnectionError: ...', '401 Unauthorized', ...)."""
+    e = str(error or "").lower()
+    if any(k in e for k in ("importerror", "modulenotfound", "no module named")):
+        return "live satellite packages are not installed"
+    if any(k in e for k in ("401", "403", "unauthorized", "forbidden", "token", "credential", "signature", "sas")):
+        return "access token missing, expired or rejected"
+    if any(k in e for k in ("429", "quota", "rate limit", "too many requests", "throttl")):
+        return "API quota or rate limit reached"
+    if any(k in e for k in ("connection", "timeout", "timed out", "urlerror", "name or service", "resolve",
+                            "network", "offline", "unreachable", "max retries", "ssl")):
+        return "network unreachable"
+    return "provider error"
+
+
+class FailoverSatelliteVerifier:
+    """Live Sentinel-2 first, offline synthetic simulator as a seamless fallback.
+
+    verify() has the same signature as SatelliteVerifier.verify. If the live check ends in a provider error (no token,
+    quota, no network, missing packages), the same question is answered by the synthetic verifier and the evidence is
+    returned with is_synthetic=True, fallback_reason and fallback_from set - the result stays labelled synthetic end to
+    end (stored, fused and shown as synthetic). After a failure the live provider is skipped for `cooldown_s` seconds so a
+    batch of reports does not wait for one network timeout per report. `fallback_events` lists what happened, for the UI.
+    """
+
+    def __init__(self, conn, primary=None, fallback=None, *, cooldown_s=300.0, **verifier_kw):
+        self.primary = primary or SatelliteVerifier(conn, PlanetaryComputerProvider(), **verifier_kw)
+        self.fallback = fallback or SatelliteVerifier(conn, SyntheticSatelliteProvider(), **verifier_kw)
+        self.cooldown_s = float(cooldown_s)
+        self.fallback_events = []
+        self._down_until = 0.0
+        self._down_reason = None
+        self._lock = threading.Lock()
+
+    def __getattr__(self, name):                       # provider, conn, aoi_radius_m, recheck_pending ... come from the live verifier
+        if name in ("primary", "fallback", "fallback_events", "_lock", "_down_until", "_down_reason", "cooldown_s"):
+            raise AttributeError(name)
+        return getattr(self.primary, name)
+
+    def _record(self, reason):
+        with self._lock:
+            self.fallback_events.append({"reason": reason, "at": dt.datetime.now(UTC).isoformat(timespec="seconds"),
+                                         "provider": getattr(self.primary.provider, "name", "live")})
+            self.fallback_events = self.fallback_events[-50:]
+
+    def verify(self, lat, lon, hazard_type, event_time=None, trigger_post_id=None, force=False, aoi_radius_m=None):
+        applicability = float(config.SAT_APPLICABILITY.get(hazard_type, 0.0))
+        if applicability <= 0.0:                          # not observable at 10 m: the live provider is irrelevant
+            return self.primary.verify(lat, lon, hazard_type, event_time, trigger_post_id, force, aoi_radius_m)
+        with self._lock:
+            skip_live, reason = time.monotonic() < self._down_until, self._down_reason
+        if not skip_live:
+            ev = self.primary.verify(lat, lon, hazard_type, event_time, trigger_post_id, force, aoi_radius_m)
+            if not ev.error:
+                return ev
+            reason = failure_reason(ev.error)
+            with self._lock:
+                self._down_until, self._down_reason = time.monotonic() + self.cooldown_s, reason
+            log.warning("live satellite check failed (%s); using the synthetic fallback for %.0f s", reason, self.cooldown_s)
+        out = self.fallback.verify(lat, lon, hazard_type, event_time, trigger_post_id, True, aoi_radius_m)
+        out.fallback_reason = reason or "provider error"
+        out.fallback_from = getattr(self.primary.provider, "name", "live")
+        self._record(out.fallback_reason)
+        return out

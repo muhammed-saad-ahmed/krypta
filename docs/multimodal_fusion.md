@@ -241,6 +241,17 @@ markers and >= 20% of the words) and `analyze_text` returns `supported=False`, `
 * Limits (be honest): this detects and undoes tampering by someone who cannot also rewrite the snapshot and manifest without the key. An attacker who
   controls the machine and has no key issue can replace both. Set `KP_LEDGER_KEY` and publish the chain head externally for stronger guarantees.
 
+### 7.5 Demo polish (`geospatial/satellite.py`, `app_ui/components.py`)
+* **Satellite fail-safe.** Choosing the live provider now builds a `FailoverSatelliteVerifier`. If the live check ends in a provider error (token
+  missing/expired, quota, no network, packages not installed) the same question is answered by the offline synthetic verifier. The result stays
+  `is_synthetic=True`, stored and fused as synthetic, and carries `fallback_reason` / `fallback_from`; the UI shows an info card ("Live satellite
+  provider unavailable (<reason>). Switched automatically to the offline Synthetic Mirror Layer ... simulated ...") . After one failure the live
+  provider is skipped for 300 s so a batch of reports does not wait for a network timeout each. The failed live attempt is still recorded as INCONCLUSIVE.
+* **Engine badge.** With no custom weights in `models/custom/`, the sidebar shows "KRYPTA Core Engine: Active (Simulation & Validation Layer)" with
+  a second line stating that custom hazard weights are not loaded; it never implies that hazard detection is running.
+* **Data-origin disclosure.** `synthetic_banner()` keeps a compact "SYNTHETIC DEMONSTRATION DATA" badge always visible and moves the long honesty
+  text into the collapsed "System Diagnostic Integrity & Data Origin Disclosure" expander.
+
 ## Honesty about what is and isn't validated
 
 * No hazard-trained weights, no real Karachi hazard dataset, no labelled flood events: no accuracy figure is claimed for any component.

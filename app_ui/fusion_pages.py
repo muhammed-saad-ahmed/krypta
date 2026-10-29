@@ -19,7 +19,8 @@ import plotly.graph_objects as go
 import streamlit as st
 
 import config
-from app_ui.components import (confidence_bar, empty_state, error_state, karachi_map, metric_tile, section_header)
+from app_ui.components import (confidence_bar, empty_state, error_state, karachi_map, metric_tile, section_header,
+                                synthetic_banner)
 from app_ui.theme import ACCENT, TEXT, TEXT_FAINT, TEXT_MUTED, risk_color
 from database import db as kpdb
 from geospatial import satellite as sat
@@ -42,8 +43,13 @@ def make_verifier(conn, mode):
     if mode == "synthetic":
         return sat.SatelliteVerifier(conn, sat.SyntheticSatelliteProvider())
     if mode == "live":
-        return sat.SatelliteVerifier(conn, sat.PlanetaryComputerProvider())
+        return sat.FailoverSatelliteVerifier(conn)
     return None
+
+
+def render_fallback_notice(reason):
+    """Info card shown when a live satellite check was answered by the offline synthetic layer instead."""
+    st.info(sat.FALLBACK_NOTICE.format(reason=reason), icon="ℹ️")
 
 
 def satellite_mode_picker(key, allow_off=True):
@@ -136,7 +142,7 @@ def render_risk_matrix(conn):
                     "Cells appear here once evidence exists for a hazard at a Karachi location.")
         return
     if m["is_synthetic"].any():
-        st.warning(SYN_NOTE)
+        synthetic_banner(SYN_NOTE)
 
     try:
         audit = fusion.full_audit(conn)
@@ -268,6 +274,9 @@ def render_osint_feed(conn):
             with c[4]: metric_tile("Satellite checks", stats.satellite_checks)
             for e in stats.source_errors:
                 st.warning(e)
+            events = getattr(verifier, "fallback_events", None)
+            if events:
+                render_fallback_notice(events[-1]["reason"])
         except Exception as exc:
             error_state("The pipeline stopped before finishing.", exc)
 
@@ -276,7 +285,7 @@ def render_osint_feed(conn):
         empty_state("NO POSTS YET", "Run the pipeline above. The offline simulator needs no network.")
         return
     if posts["is_synthetic"].any():
-        st.warning(SYN_NOTE)
+        synthetic_banner(SYN_NOTE)
     f = st.columns(3)
     hz = f[0].multiselect("Hazard", sorted(posts["hazard_type"].dropna().unique()))
     only_active = f[1].checkbox("Active only", True)
@@ -316,6 +325,8 @@ def render_satellite_check(conn):
         verifier = make_verifier(conn, mode)
         with st.spinner("Searching scenes, reading the area of interest, computing indices..."):
             ev = verifier.verify(float(lat), float(lon), hazard, force=True)
+        if ev.fallback_reason:
+            render_fallback_notice(ev.fallback_reason)
         _render_evidence(ev)
     hist = kpdb.fetch_satellite_checks(conn, limit=50)
     if not hist.empty:
@@ -454,7 +465,7 @@ def render_sensitivity(conn):
             now = _dt.datetime.now(_dt.timezone.utc)
             cells, evs = sim.synthetic_cells(n_syn, seed=1, now=now)
             comp = sim.compile_cells(cells, evs, now=now)
-            st.warning("These cells are SYNTHETIC. Results demonstrate the method only.")
+            synthetic_banner("These cells are synthetic. Results demonstrate the method only.")
         else:
             comp = sim.load_cells(conn)
         if comp.n_cells == 0:
